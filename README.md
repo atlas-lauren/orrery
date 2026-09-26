@@ -159,6 +159,10 @@ the interactive rendering waits for the web layer.
 An interactive 3D orrery (Three.js) showing where the planets are for any
 date between 3000 BCE and 3000 CE, past, present or future.
 
+**Live site:** https://atlas-lauren.github.io/orrery/ (static build, published
+from `web/` to the `gh-pages` branch by `.github/workflows/pages.yml` on every
+push to `main`).
+
 ```bash
 .venv/bin/python -m pip install -e ".[web]"
 .venv/bin/python -m orrery.web            # serves http://127.0.0.1:8000
