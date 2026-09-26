@@ -1,0 +1,70 @@
+# Aspect definitions — edit freely.
+#
+# Each [[aspect]] has:
+#   name   : label returned in results
+#   angle  : exact separation in degrees (folded to [0, 180])
+#   orb    : maximum allowed deviation from `angle`, in degrees
+#   family : informational grouping (ptolemaic | minor | harmonic)
+#
+# Angular separations are identical in the tropical and sidereal zodiacs, so
+# these definitions apply unchanged to both.
+
+[[aspect]]
+name = "conjunction"
+angle = 0.0
+orb = 8.0
+family = "ptolemaic"
+
+[[aspect]]
+name = "opposition"
+angle = 180.0
+orb = 8.0
+family = "ptolemaic"
+
+[[aspect]]
+name = "trine"
+angle = 120.0
+orb = 7.0
+family = "ptolemaic"
+
+[[aspect]]
+name = "square"
+angle = 90.0
+orb = 7.0
+family = "ptolemaic"
+
+[[aspect]]
+name = "sextile"
+angle = 60.0
+orb = 5.0
+family = "ptolemaic"
+
+[[aspect]]
+name = "quintile"
+angle = 72.0
+orb = 2.0
+family = "harmonic"
+
+[[aspect]]
+name = "biquintile"
+angle = 144.0
+orb = 2.0
+family = "harmonic"
+
+[[aspect]]
+name = "sesquiquadrate"
+angle = 135.0
+orb = 2.0
+family = "minor"
+
+[[aspect]]
+name = "semisextile"
+angle = 30.0
+orb = 1.5
+family = "minor"
+
+[[aspect]]
+name = "quincunx"
+angle = 150.0
+orb = 2.0
+family = "minor"

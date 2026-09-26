@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Orrery</title>
+<meta name="description" content="An interactive 3D orrery: where the planets are for any date from 3000 BCE to 3000 CE, computed from JPL orbital elements.">
+<meta name="theme-color" content="#03040a">
+<meta property="og:title" content="Orrery">
+<meta property="og:description" content="An interactive 3D orrery: where the planets are for any date from 3000 BCE to 3000 CE.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2303040a'/%3E%3Cellipse cx='32' cy='32' rx='24' ry='12' fill='none' stroke='%236fa8ff' stroke-width='2' opacity='.7'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23ffc46b'/%3E%3Ccircle cx='53' cy='26' r='3' fill='%236fa8ff'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #03040a;
+    --glass: rgba(10, 14, 28, 0.55);
+    --glass-strong: rgba(10, 14, 28, 0.78);
+    --border: rgba(255, 255, 255, 0.08);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text: #e6e9f2;
+    --muted: #8b93a7;
+    --accent: #ffc46b;
+    --accent-ink: #1b1305;
+    --radius: 14px;
+    --shadow: 0 12px 40px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    --font-ui: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --font-display: 'Cormorant Garamond', 'Times New Roman', Georgia, serif;
+    --controls-h: 236px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.4;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  button, input, select { font-family: inherit; font-size: inherit; color: inherit; }
+
+  #scene {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    background: var(--bg);
+  }
+  #scene canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+  /* ---------- Labels ---------- */
+  #labels {
+    position: fixed;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  .label {
+    position: absolute;
+    left: 0;
+    top: 0;
+    transform: translate(-50%, -50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px 2px 6px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(230, 233, 242, 0.78);
+    background: rgba(6, 9, 20, 0.35);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    white-space: nowrap;
+    pointer-events: auto;
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease, opacity 0.2s ease;
+    will-change: transform;
+  }
+  .label .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--label-color, #fff);
+    box-shadow: 0 0 8px var(--label-color, #fff);
+    flex: none;
+  }
+  .label:hover { color: #fff; border-color: var(--border-strong); background: rgba(6, 9, 20, 0.6); }
+  .label.selected {
+    color: var(--accent);
+    border-color: rgba(255, 196, 107, 0.55);
+    background: rgba(20, 16, 6, 0.65);
+  }
+  .label.hidden { display: none; }
+  #labels.off .label { display: none; }
+
+  /* ---------- Glass ---------- */
+  .glass {
+    background: var(--glass);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    appearance: none;
+    -webkit-appearance: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text);
+    font-weight: 500;
+    font-size: 13px;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.08s ease, color 0.15s ease, box-shadow 0.15s ease;
+    white-space: nowrap;
+  }
+  .btn:hover { background: rgba(255, 255, 255, 0.11); border-color: var(--border-strong); }
+  .btn:active { background: rgba(255, 255, 255, 0.16); transform: scale(0.97); }
+  .btn:focus-visible { outline: 2px solid rgba(255, 196, 107, 0.75); outline-offset: 2px; }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn.icon { width: 36px; padding: 0; }
+  .btn.small { height: 30px; padding: 0 10px; font-size: 12px; }
+  .btn.small.icon { width: 30px; padding: 0; }
+  .btn svg { width: 16px; height: 16px; fill: currentColor; flex: none; }
+  .btn.primary {
+    background: var(--accent);
+    border-color: rgba(255, 196, 107, 0.9);
+    color: var(--accent-ink);
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    box-shadow: 0 0 0 4px rgba(255, 196, 107, 0.12), 0 6px 18px rgba(255, 196, 107, 0.25);
+  }
+  .btn.primary:hover { background: #ffd48a; }
+  .btn.primary svg { width: 18px; height: 18px; }
+  .btn[aria-pressed="true"] {
+    background: rgba(255, 196, 107, 0.16);
+    border-color: rgba(255, 196, 107, 0.55);
+    color: var(--accent);
+  }
+  .btn .kbd-hint { font-size: 10px; color: var(--muted); font-weight: 400; }
+
+  /* ---------- Fields ---------- */
+  .field {
+    appearance: none;
+    -webkit-appearance: none;
+    height: 32px;
+    padding: 0 9px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(0, 0, 0, 0.35);
+    color: var(--text);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    min-width: 0;
+  }
+  .field:hover { border-color: var(--border-strong); }
+  .field:focus { outline: none; border-color: rgba(255, 196, 107, 0.7); box-shadow: 0 0 0 3px rgba(255, 196, 107, 0.15); }
+  .field::placeholder { color: var(--muted); }
+  input.field[type="number"]::-webkit-outer-spin-button,
+  input.field[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input.field[type="number"] { -moz-appearance: textfield; }
+  select.field {
+    padding-right: 26px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b93a7' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 9px center;
+    cursor: pointer;
+  }
+  select.field option { background: #0b0f1e; color: var(--text); }
+  input.field[type="datetime-local"] { color-scheme: dark; }
+  input.field[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
+
+  /* Switch */
+  .switch {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 36px;
+    height: 20px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    cursor: pointer;
+    flex: none;
+    transition: background-color 0.18s ease, border-color 0.18s ease;
+    margin: 0;
+  }
+  .switch::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #cfd5e4;
+    transition: transform 0.18s ease, background-color 0.18s ease;
+  }
+  .switch:checked { background: rgba(255, 196, 107, 0.85); border-color: rgba(255, 196, 107, 0.9); }
+  .switch:checked::before { transform: translateX(16px); background: var(--accent-ink); }
+  .switch:focus-visible { outline: 2px solid rgba(255, 196, 107, 0.75); outline-offset: 2px; }
+
+  /* Range slider (shared) */
+  input[type="range"].slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 24px;
+    background: transparent;
+    margin: 0;
+    cursor: pointer;
+  }
+  input[type="range"].slider:focus { outline: none; }
+  input[type="range"].slider::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, rgba(255,255,255,0.10), rgba(255,255,255,0.18) 50%, rgba(255,255,255,0.10));
+  }
+  input[type="range"].slider::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.14);
+  }
+  input[type="range"].slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    margin-top: -6px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #0b0f1e;
+    box-shadow: 0 0 0 3px rgba(255, 196, 107, 0.2), 0 2px 8px rgba(0,0,0,0.5);
+    transition: box-shadow 0.15s ease;
+  }
+  input[type="range"].slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid #0b0f1e;
+    box-shadow: 0 0 0 3px rgba(255, 196, 107, 0.2);
+  }
+  input[type="range"].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 5px rgba(255, 196, 107, 0.35); }
+  input[type="range"].slider.fine::-webkit-slider-thumb { background: #9fe0ff; box-shadow: 0 0 0 3px rgba(159, 224, 255, 0.25); }
+  input[type="range"].slider.fine::-moz-range-thumb { background: #9fe0ff; }
+
+  /* ---------- Title block ---------- */
+  #title-block {
+    position: fixed;
+    top: 18px;
+    left: 20px;
+    z-index: 5;
+    pointer-events: none;
+  }
+  #title-block .brand {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 26px;
+    letter-spacing: 0.34em;
+    line-height: 1;
+    color: var(--text);
+    text-shadow: 0 2px 18px rgba(0,0,0,0.6);
+  }
+  #title-block .brand span { color: var(--accent); }
+  #title-block .subtitle {
+    margin-top: 6px;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #focus-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    padding: 4px 6px 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--text);
+    pointer-events: auto;
+    animation: chipIn 0.25s ease;
+  }
+  #focus-chip[hidden] { display: none; }
+  #focus-chip .lead { color: var(--muted); }
+  #focus-chip .btn { height: 24px; width: 24px; border-radius: 50%; }
+  #focus-chip .btn svg { width: 12px; height: 12px; }
+  @keyframes chipIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+  /* ---------- Top-right ---------- */
+  #top-right {
+    position: fixed;
+    top: 18px;
+    right: 20px;
+    z-index: 6;
+    display: flex;
+    gap: 8px;
+  }
+  #top-right .btn { backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); background: rgba(10, 14, 28, 0.55); }
+  #top-right .btn:hover { background: rgba(30, 36, 58, 0.75); }
+
+  /* ---------- Popovers ---------- */
+  .popover {
+    position: fixed;
+    top: 64px;
+    right: 20px;
+    z-index: 7;
+    width: 300px;
+    max-height: calc(100vh - 90px);
+    overflow: auto;
+    padding: 14px 16px 16px;
+    background: var(--glass-strong);
+    animation: popIn 0.18s ease;
+  }
+  .popover[hidden] { display: none; }
+  @keyframes popIn { from { opacity: 0; transform: translateY(-6px) scale(0.98); } to { opacity: 1; transform: none; } }
+  .popover h3 {
+    margin: 0 0 10px;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .popover h3:not(:first-child) { margin-top: 16px; }
+  .popover .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 0;
+  }
+  .popover .row label { flex: 1; cursor: pointer; }
+  .popover .row .sub { display: block; font-size: 11px; color: var(--muted); }
+  .popover .row .slider-wrap { width: 110px; }
+  .popover .preset-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .popover .preset-grid .btn { justify-content: space-between; height: 32px; font-size: 12px; }
+  .popover .preset-grid .btn.wide { grid-column: 1 / -1; justify-content: center; }
+  .popover .note { margin: 10px 0 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .popover .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 12px; align-items: center; }
+  .popover .shortcuts kbd, .kbd {
+    display: inline-block;
+    min-width: 22px;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 1px 0 rgba(0,0,0,0.5);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    text-align: center;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  /* ---------- Info panel ---------- */
+  #info-panel {
+    position: fixed;
+    top: 64px;
+    right: 20px;
+    bottom: calc(var(--controls-h) + 20px);
+    z-index: 4;
+    width: 330px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
+  }
+  #info-panel.collapsed { transform: translateX(calc(100% + 24px)); opacity: 0; pointer-events: none; }
+  #info-panel .panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 12px 8px 16px;
+  }
+  #info-panel h2 {
+    margin: 0;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  #info-panel .badges { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 10px; }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    background: rgba(255, 196, 107, 0.12);
+    border: 1px solid rgba(255, 196, 107, 0.35);
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .badge.muted { background: rgba(255,255,255,0.05); border-color: var(--border); color: var(--muted); }
+  .badge.exact { background: rgba(120, 220, 160, 0.12); border-color: rgba(120, 220, 160, 0.4); color: #a6ecc4; }
+  .badge.anchored { background: rgba(120, 200, 255, 0.12); border-color: rgba(120, 200, 255, 0.4); color: #b6dcff; }
+  #info-rows { flex: 1; overflow: auto; padding: 0 8px 8px; }
+  #info-rows::-webkit-scrollbar { width: 8px; }
+  #info-rows::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+  .info-row {
+    display: grid;
+    grid-template-columns: 14px 1fr auto;
+    grid-template-rows: auto auto;
+    column-gap: 10px;
+    row-gap: 2px;
+    align-items: center;
+    padding: 8px 8px;
+    border-radius: 10px;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+  .info-row:hover, .info-row.hover { background: rgba(255, 255, 255, 0.05); }
+  .info-row.selected { background: rgba(255, 196, 107, 0.09); border-color: rgba(255, 196, 107, 0.3); }
+  .info-row .dot {
+    grid-row: 1 / span 2;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--row-color, #fff);
+    box-shadow: 0 0 10px var(--row-color, #fff);
+  }
+  .info-row .name { font-weight: 600; font-size: 13px; letter-spacing: 0.02em; }
+  .info-row .lon { font-variant-numeric: tabular-nums; font-size: 13px; text-align: right; color: var(--text); }
+  .info-row .sign { color: var(--accent); font-weight: 500; margin-right: 4px; }
+  .info-row .dist { grid-column: 2 / span 2; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; justify-content: space-between; gap: 8px; }
+  .info-row .dist b { font-weight: 500; color: rgba(230, 233, 242, 0.85); }
+  #info-panel .fineprint {
+    margin: 0;
+    padding: 8px 16px 12px;
+    font-size: 10.5px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    line-height: 1.45;
+  }
+
+  /* ---------- Controls ---------- */
+  #controls {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    z-index: 5;
+    width: min(920px, calc(100% - 32px));
+    padding: 12px 18px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .date-block { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .headline {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 30px;
+    line-height: 1.05;
+    letter-spacing: 0.01em;
+    color: var(--text);
+  }
+  .headline .era { color: var(--accent); font-style: italic; }
+  .subline { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+  .subline .sep { margin: 0 6px; opacity: 0.55; }
+
+  .transport {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .transport .group { display: inline-flex; align-items: center; gap: 4px; }
+  .transport .spacer { width: 8px; }
+  .transport .step { min-width: 52px; font-variant-numeric: tabular-nums; font-size: 12px; }
+  .transport select.field { height: 36px; border-radius: 10px; }
+
+  .timeline-wrap { position: relative; padding: 4px 0 16px; }
+  #timeline-marker {
+    position: absolute;
+    top: 0;
+    width: 1px;
+    height: 32px;
+    background: rgba(255, 196, 107, 0.35);
+    pointer-events: none;
+    transform: translateX(-0.5px);
+  }
+  #timeline-ticks {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    top: 26px;
+    height: 12px;
+    pointer-events: none;
+  }
+  #timeline-ticks .tick {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
+  #timeline-ticks .tick::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -7px;
+    width: 1px;
+    height: 5px;
+    background: rgba(255,255,255,0.2);
+  }
+  #timeline-hint {
+    position: absolute;
+    right: 0;
+    top: -16px;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+  #timeline-hint .kbd { padding: 0 4px; min-width: 0; font-size: 10px; }
+  #timeline-hint.active { color: #9fe0ff; }
+
+  .date-form {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin: 0;
+  }
+  .date-form .lbl { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; margin-right: 2px; }
+  .date-form #in-year { width: 78px; }
+  .date-form #in-month { width: 112px; }
+  .date-form #in-day { width: 52px; }
+  .date-form #in-hour, .date-form #in-minute { width: 50px; }
+  .date-form .colon { color: var(--muted); margin: 0 -2px; }
+  .date-form #era-hint { font-size: 11px; color: var(--accent); min-width: 58px; font-variant-numeric: tabular-nums; }
+  .date-form .divider { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
+  .date-form #in-datetime { width: 196px; }
+
+  /* ---------- Loading ---------- */
+  #loading {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: radial-gradient(ellipse at 50% 60%, #0a0e22 0%, var(--bg) 65%);
+    transition: opacity 0.9s ease;
+  }
+  #loading.fade { opacity: 0; pointer-events: none; }
+  #loading .name {
+    font-family: var(--font-display);
+    font-size: 44px;
+    letter-spacing: 0.42em;
+    padding-left: 0.42em;
+    font-weight: 400;
+    color: var(--text);
+    animation: breathe 3s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%, 100% { opacity: 0.85; } 50% { opacity: 1; } }
+  #loading .tag { font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--muted); margin-top: -10px; }
+  #loading .bar {
+    width: 240px;
+    height: 2px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.1);
+    overflow: hidden;
+  }
+  #loading-bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #ffb457, var(--accent), #ffe3a8);
+    transition: width 0.25s ease;
+  }
+  #loading-status { font-size: 12px; color: var(--muted); letter-spacing: 0.06em; min-height: 18px; text-align: center; max-width: 420px; padding: 0 20px; }
+  #loading-status.error { color: #ff9c8a; }
+
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 1080px) {
+    #info-panel { width: 290px; }
+    #controls { width: min(920px, calc(100% - 32px)); }
+  }
+  @media (max-width: 760px) {
+    :root { --controls-h: 300px; }
+    #title-block { top: 14px; left: 14px; }
+    #title-block .brand { font-size: 20px; }
+    #top-right { top: 14px; right: 14px; }
+    .popover { right: 14px; left: 14px; width: auto; }
+    #info-panel {
+      top: auto;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      width: auto;
+      max-height: 58vh;
+      z-index: 8;
+      transform: none;
+      transition: transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
+    }
+    #info-panel.collapsed { transform: translateY(calc(100% + 24px)); opacity: 0; }
+    #controls { bottom: 12px; padding: 10px 12px 12px; gap: 8px; width: calc(100% - 24px); }
+    .headline { font-size: 22px; }
+    .subline { font-size: 11px; }
+    .transport .step { min-width: 44px; padding: 0 8px; }
+    .date-form .divider { display: none; }
+    .date-form #in-datetime { width: 100%; }
+    #timeline-hint { display: none; }
+    .label { font-size: 10px; padding: 1px 6px 1px 5px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+</style>
+</head>
+<body>
+
+<div id="scene"></div>
+<div id="labels" aria-hidden="true"></div>
+
+<header id="title-block">
+  <div class="brand">ORRER<span>Y</span></div>
+  <div class="subtitle">The solar system, any date</div>
+  <div id="focus-chip" class="glass" hidden>
+    <span class="lead">Following</span>
+    <span id="focus-name">Sun</span>
+    <button id="btn-unfocus" class="btn icon" type="button" title="Return to the Sun (Esc)" aria-label="Stop following">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.3 3.3a1 1 0 0 1 1.4 0L8 6.6l3.3-3.3a1 1 0 1 1 1.4 1.4L9.4 8l3.3 3.3a1 1 0 0 1-1.4 1.4L8 9.4l-3.3 3.3a1 1 0 0 1-1.4-1.4L6.6 8 3.3 4.7a1 1 0 0 1 0-1.4z"/></svg>
+    </button>
+  </div>
+</header>
+
+<div id="top-right">
+  <button id="btn-info-toggle" class="btn icon" type="button" title="Positions" aria-label="Show positions panel" aria-expanded="false" aria-controls="info-panel">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h9A1.5 1.5 0 0 1 14 3.5v9a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5v-9zm2 1a.5.5 0 0 0 0 1h8a.5.5 0 0 0 0-1H4zm0 3a.5.5 0 0 0 0 1h8a.5.5 0 0 0 0-1H4zm0 3a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1H4z"/></svg>
+  </button>
+  <button id="btn-settings" class="btn icon" type="button" title="Settings" aria-label="Settings" aria-expanded="false" aria-controls="settings-popover">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.6 1.2a.8.8 0 0 1 .8-.7h1.2a.8.8 0 0 1 .8.7l.2 1.4c.5.2.9.4 1.3.7l1.3-.5a.8.8 0 0 1 1 .3l.6 1.1a.8.8 0 0 1-.2 1l-1.1.9a5.4 5.4 0 0 1 0 1.5l1.1.9a.8.8 0 0 1 .2 1l-.6 1.1a.8.8 0 0 1-1 .3l-1.3-.5c-.4.3-.8.5-1.3.7l-.2 1.4a.8.8 0 0 1-.8.7H7.4a.8.8 0 0 1-.8-.7l-.2-1.4a5.6 5.6 0 0 1-1.3-.7l-1.3.5a.8.8 0 0 1-1-.3L2.2 10a.8.8 0 0 1 .2-1l1.1-.9a5.4 5.4 0 0 1 0-1.5L2.4 5.7a.8.8 0 0 1-.2-1l.6-1.1a.8.8 0 0 1 1-.3l1.3.5c.4-.3.8-.5 1.3-.7l.2-1.4zM8 10.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4z"/></svg>
+  </button>
+  <button id="btn-help" class="btn icon" type="button" title="Help (H)" aria-label="Help" aria-expanded="false" aria-controls="help-popover">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1zm0 1.4a5.6 5.6 0 1 0 0 11.2A5.6 5.6 0 0 0 8 2.4zm0 8.3a.9.9 0 1 1 0 1.8.9.9 0 0 1 0-1.8zM8 4.3c1.4 0 2.4.9 2.4 2.1 0 .8-.4 1.3-1.1 1.8-.6.4-.7.6-.7 1.1v.2H7.3v-.3c0-.9.3-1.4 1-1.9.5-.4.7-.6.7-1 0-.5-.4-.8-1-.8s-1 .4-1.1 1H5.5c.1-1.3 1-2.2 2.5-2.2z"/></svg>
+  </button>
+</div>
+
+<div id="settings-popover" class="glass popover" hidden role="dialog" aria-label="Settings">
+  <h3>Display</h3>
+  <div class="row"><label for="opt-orbits">Orbits <span class="sub">Sampled paths over one period</span></label><input class="switch" type="checkbox" id="opt-orbits" checked></div>
+  <div class="row"><label for="opt-labels">Labels <span class="sub">Body names in the scene</span></label><input class="switch" type="checkbox" id="opt-labels" checked></div>
+  <div class="row"><label for="opt-belt">Asteroid belt <span class="sub">2.2 to 3.3 AU, decorative</span></label><input class="switch" type="checkbox" id="opt-belt" checked></div>
+  <div class="row"><label for="opt-milkyway">Milky Way <span class="sub">Galactic band on the sky</span></label><input class="switch" type="checkbox" id="opt-milkyway" checked></div>
+  <div class="row"><label for="opt-bloom">Bloom <span class="sub">Glow on the Sun and highlights</span></label><input class="switch" type="checkbox" id="opt-bloom" checked></div>
+  <div class="row"><label for="bloom-strength">Bloom strength</label><div class="slider-wrap"><input class="slider" type="range" id="bloom-strength" min="0" max="2" step="0.05" value="0.5" aria-label="Bloom strength"></div></div>
+  <h3>Scale</h3>
+  <div class="row"><label for="opt-truescale">True scale distances <span class="sub">Linear AU instead of compressed radii</span></label><input class="switch" type="checkbox" id="opt-truescale"></div>
+  <div class="row"><label for="opt-truesize">True size planets <span class="sub">Real radii, Earth = 0.06 units</span></label><input class="switch" type="checkbox" id="opt-truesize"></div>
+  <h3>Bodies</h3>
+  <div class="row"><label for="opt-pluto">Show Pluto</label><input class="switch" type="checkbox" id="opt-pluto" checked></div>
+  <div class="row"><label for="opt-moon">Show Moon</label><input class="switch" type="checkbox" id="opt-moon" checked></div>
+  <h3>Camera</h3>
+  <div class="preset-grid">
+    <button class="btn" type="button" id="preset-inner">Inner system <span class="kbd">1</span></button>
+    <button class="btn" type="button" id="preset-full">Full system <span class="kbd">2</span></button>
+    <button class="btn" type="button" id="preset-top">Top-down <span class="kbd">3</span></button>
+    <button class="btn" type="button" id="preset-edge">Edge-on <span class="kbd">4</span></button>
+    <button class="btn wide" type="button" id="btn-reset-view">Reset view <span class="kbd">R</span></button>
+  </div>
+</div>
+
+<div id="help-popover" class="glass popover" hidden role="dialog" aria-label="Help">
+  <h3>Keyboard</h3>
+  <div class="shortcuts">
+    <kbd>Space</kbd><span>Play / pause</span>
+    <kbd>&larr; &rarr;</kbd><span>Step one day (Shift: month, Alt: year)</span>
+    <kbd>&uarr; &darr;</kbd><span>Faster / slower</span>
+    <kbd>N</kbd><span>Jump to now</span>
+    <kbd>R</kbd><span>Reset camera</span>
+    <kbd>1 - 4</kbd><span>Camera presets</span>
+    <kbd>L</kbd><span>Toggle labels</span>
+    <kbd>O</kbd><span>Toggle orbits</span>
+    <kbd>Esc</kbd><span>Return to the Sun</span>
+    <kbd>H</kbd><span>This help</span>
+  </div>
+  <h3>Mouse</h3>
+  <div class="shortcuts">
+    <kbd>Drag</kbd><span>Orbit the view</span>
+    <kbd>Wheel</kbd><span>Zoom</span>
+    <kbd>Click</kbd><span>Follow a body</span>
+    <kbd>Dbl-click</kbd><span>Empty space: return to the Sun</span>
+    <kbd>Shift+drag</kbd><span>Timeline: fine scrub, one year either side</span>
+  </div>
+  <h3>Accuracy</h3>
+  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Axial tilts are approximate (tilted about the scene X axis) and radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe.</p>
+</div>
+
+<aside id="info-panel" class="glass" aria-label="Positions">
+  <div class="panel-head">
+    <h2>Positions</h2>
+    <button id="btn-info-close" class="btn small icon" type="button" title="Hide panel" aria-label="Hide positions panel">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.3 3.3a1 1 0 0 1 1.4 0L8 6.6l3.3-3.3a1 1 0 1 1 1.4 1.4L9.4 8l3.3 3.3a1 1 0 0 1-1.4 1.4L8 9.4l-3.3 3.3a1 1 0 0 1-1.4-1.4L6.6 8 3.3 4.7a1 1 0 0 1 0-1.4z"/></svg>
+    </button>
+  </div>
+  <div class="badges">
+    <span id="source-badge" class="badge">Keplerian (JPL elements)</span>
+    <span id="element-set" class="badge muted">jpl-1800-2050</span>
+  </div>
+  <div id="info-rows" role="list"></div>
+  <p class="fineprint">Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. The Moon row is geocentric. Click a row to follow that body.</p>
+</aside>
+
+<section id="controls" class="glass" aria-label="Time controls">
+  <div class="date-block">
+    <div id="date-headline" class="headline">&nbsp;</div>
+    <div id="date-subline" class="subline">&nbsp;</div>
+  </div>
+
+  <div class="transport">
+    <div class="group">
+      <button class="btn step" type="button" id="btn-back-year" title="Back one year">-1y</button>
+      <button class="btn step" type="button" id="btn-back-month" title="Back one month">-1mo</button>
+      <button class="btn step" type="button" id="btn-back-day" title="Back one day">-1d</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn primary" type="button" id="btn-play" title="Play / pause (Space)" aria-label="Play" aria-pressed="false">
+      <svg id="icon-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.8c0-.8.9-1.3 1.6-.9l7 5.2c.6.4.6 1.4 0 1.8l-7 5.2c-.7.4-1.6-.1-1.6-.9V2.8z"/></svg>
+      <svg id="icon-pause" viewBox="0 0 16 16" aria-hidden="true" style="display:none"><path d="M3.5 2.5A1 1 0 0 1 4.5 1.5h1.5a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H4.5a1 1 0 0 1-1-1v-11zm5.5 0a1 1 0 0 1 1-1h1.5a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H10a1 1 0 0 1-1-1v-11z"/></svg>
+    </button>
+    <div class="spacer"></div>
+    <div class="group">
+      <button class="btn step" type="button" id="btn-fwd-day" title="Forward one day">+1d</button>
+      <button class="btn step" type="button" id="btn-fwd-month" title="Forward one month">+1mo</button>
+      <button class="btn step" type="button" id="btn-fwd-year" title="Forward one year">+1y</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="group">
+      <label class="sr-only" for="speed-select">Speed</label>
+      <select class="field" id="speed-select" title="Playback speed"></select>
+      <button class="btn icon" type="button" id="btn-reverse" title="Reverse direction" aria-label="Reverse direction" aria-pressed="false">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3.2a.75.75 0 0 1 1.06 0l3.5 3.5a.75.75 0 0 1 0 1.06l-3.5 3.5a.75.75 0 1 1-1.06-1.06L11.7 8H4.75a.75.75 0 0 1 0-1.5h6.95L9.5 4.26a.75.75 0 0 1 0-1.06zM2.75 11.5a.75.75 0 0 1 .75.75v.5a.75.75 0 0 1-1.5 0v-.5a.75.75 0 0 1 .75-.75z"/></svg>
+      </button>
+      <button class="btn" type="button" id="btn-now" title="Jump to now (N)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zm0 1.4a5.1 5.1 0 1 0 0 10.2A5.1 5.1 0 0 0 8 2.9zm-.7 2.1h1.4v3.2l2.3 1.4-.7 1.2-3-1.8V5z"/></svg>
+        Now
+      </button>
+    </div>
+  </div>
+
+  <div class="timeline-wrap">
+    <label class="sr-only" for="timeline">Timeline</label>
+    <input class="slider" type="range" id="timeline" min="0" max="1" step="any" value="0.5">
+    <div id="timeline-marker"></div>
+    <div id="timeline-ticks"></div>
+    <div id="timeline-hint"><span class="kbd">Shift</span> + drag: fine scrub</div>
+  </div>
+
+  <form id="date-form" class="date-form" autocomplete="off">
+    <span class="lbl">Year</span>
+    <input class="field" type="number" id="in-year" step="1" title="Astronomical year: 0 = 1 BCE, -1 = 2 BCE" aria-label="Year">
+    <span id="era-hint">CE</span>
+    <label class="sr-only" for="in-month">Month</label>
+    <select class="field" id="in-month" aria-label="Month"></select>
+    <input class="field" type="number" id="in-day" min="1" max="31" step="1" aria-label="Day">
+    <span class="lbl">UTC</span>
+    <input class="field" type="number" id="in-hour" min="0" max="23" step="1" aria-label="Hour">
+    <span class="colon">:</span>
+    <input class="field" type="number" id="in-minute" min="0" max="59" step="1" aria-label="Minute">
+    <button class="btn small" type="submit" id="btn-apply">Apply</button>
+    <span class="divider"></span>
+    <input class="field" type="datetime-local" id="in-datetime" aria-label="Quick date picker (1 to 9999 CE)" title="Quick picker, 0001 to 9999 CE, UTC">
+  </form>
+</section>
+
+<div id="loading" role="status" aria-live="polite">
+  <div class="name">ORRERY</div>
+  <div class="tag">Preparing the heavens</div>
+  <div class="bar"><div id="loading-bar"></div></div>
+  <div id="loading-status">Loading three.js</div>
+</div>
+
+<script src="ephemeris.js"></script>
+<script src="visuals.js"></script>
+<script src="app.js"></script>
+<script type="importmap">
+{"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
+</script>
+<script type="module">
+  const statusEl = document.getElementById('loading-status');
+  const barEl = document.getElementById('loading-bar');
+  function fail(message) {
+    if (statusEl) { statusEl.textContent = message; statusEl.classList.add('error'); }
+    if (barEl) barEl.style.width = '0%';
+  }
+  let bundle = null;
+  try {
+    const mods = await Promise.all([
+      import('three'),
+      import('three/addons/controls/OrbitControls.js'),
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+      import('three/addons/postprocessing/OutputPass.js')
+    ]);
+    bundle = {
+      THREE: mods[0],
+      OrbitControls: mods[1].OrbitControls,
+      EffectComposer: mods[2].EffectComposer,
+      RenderPass: mods[3].RenderPass,
+      UnrealBloomPass: mods[4].UnrealBloomPass,
+      OutputPass: mods[5].OutputPass
+    };
+    window.THREE_BUNDLE = bundle;
+  } catch (err) {
+    console.error(err);
+    fail('Could not load three.js from jsdelivr. The orrery needs a network connection the first time it runs. Check your connection and reload.');
+  }
+  if (bundle) {
+    if (typeof window.startOrrery !== 'function') {
+      fail('app.js did not load. Make sure ephemeris.js, visuals.js and app.js sit next to index.html.');
+    } else if (!window.Ephemeris) {
+      fail('ephemeris.js did not load. Make sure it sits next to index.html.');
+    } else {
+      // Kept outside the import try/catch so a renderer or DOM failure is reported as
+      // such rather than as a CDN problem.
+      try {
+        window.startOrrery(bundle);
+      } catch (err) {
+        console.error(err);
+        fail('The orrery could not start: ' + (err && err.message ? err.message : err));
+      }
+    }
+  }
+</script>
+</body>
+</html>

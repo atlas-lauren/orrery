@@ -1,0 +1,6 @@
+name,category,time_precision,datetime_utc,local_datetime,tz,latitude,longitude,year,month,day,source,notes
+2020 Great Conjunction,astronomy,exact,2020-12-21T18:00:00Z,,,0.0,0.0,,,,almanac,Jupiter-Saturn ~0.1 deg
+JFK assassination,assassination,exact,,1963-11-22 12:30,America/Chicago,32.7807,-96.8089,,,,historical,Dealey Plaza local time
+Battle of Waterloo,battle,day,,,,50.68,4.41,1815,6,18,historical,only the date is firmly known
+Caesar assassination,assassination,day,,,,41.9,12.5,-43,3,15,historical,44 BCE; BCE date via numeric components
+Ancient solar eclipse,astronomy,unknown,,,,,,-584,5,28,historical,Thales eclipse; time of day unknown

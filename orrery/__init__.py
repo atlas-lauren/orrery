@@ -1,0 +1,118 @@
+"""Orrery — Astrological Configuration Analysis Engine.
+
+An empirical hypothesis-testing tool for planetary angular configurations.
+The Python engine (``orrery.astro`` and friends) is importable and fully
+independent of any web layer so batch/headless analysis is the default mode.
+"""
+
+from orrery.astro import (
+    AstroEngine,
+    BodyPosition,
+    PLANETS,
+    LUMINARIES,
+    NODES,
+    ALL_BODIES,
+)
+from orrery.aspects import (
+    AspectEngine,
+    AspectType,
+    Aspect,
+    Figure,
+    load_aspect_config,
+    find_syzygies,
+    find_regular_polygons,
+)
+from orrery.events import (
+    Event,
+    EventCensus,
+    TimePrecision,
+    TimePrecisionError,
+    load_events,
+    event_from_row,
+    reliable_bodies,
+    census_for_event,
+)
+from orrery.search import (
+    ConfigMatch,
+    configuration_vector,
+    find_similar_configurations,
+    SharedAspect,
+    AspectOverlapMatch,
+    reference_aspect_set,
+    find_aspect_overlap,
+    SharedAspectTally,
+    shared_aspects_across_events,
+    aspect_pairs,
+    OverlapNull,
+    OverlapAssessment,
+    background_overlap_distribution,
+    assess_overlap,
+)
+from orrery.stats import (
+    aspect_pattern,
+    monte_carlo_test,
+    MonteCarloResult,
+    schuster_test,
+    SchusterResult,
+    MultipleComparisons,
+    CorrectedResult,
+    DutyCycle,
+    aspect_duty_cycle,
+    aspect_duty_cycles,
+    binomial_significance,
+    SharedAspectSignificance,
+    assess_shared_aspects,
+)
+
+__all__ = [
+    "AstroEngine",
+    "BodyPosition",
+    "PLANETS",
+    "LUMINARIES",
+    "NODES",
+    "ALL_BODIES",
+    "AspectEngine",
+    "AspectType",
+    "Aspect",
+    "Figure",
+    "load_aspect_config",
+    "find_syzygies",
+    "find_regular_polygons",
+    "Event",
+    "EventCensus",
+    "TimePrecision",
+    "TimePrecisionError",
+    "load_events",
+    "event_from_row",
+    "reliable_bodies",
+    "census_for_event",
+    "ConfigMatch",
+    "configuration_vector",
+    "find_similar_configurations",
+    "SharedAspect",
+    "AspectOverlapMatch",
+    "reference_aspect_set",
+    "find_aspect_overlap",
+    "SharedAspectTally",
+    "shared_aspects_across_events",
+    "aspect_pairs",
+    "OverlapNull",
+    "OverlapAssessment",
+    "background_overlap_distribution",
+    "assess_overlap",
+    "aspect_pattern",
+    "monte_carlo_test",
+    "MonteCarloResult",
+    "schuster_test",
+    "SchusterResult",
+    "MultipleComparisons",
+    "CorrectedResult",
+    "DutyCycle",
+    "aspect_duty_cycle",
+    "aspect_duty_cycles",
+    "binomial_significance",
+    "SharedAspectSignificance",
+    "assess_shared_aspects",
+]
+
+__version__ = "0.1.0"

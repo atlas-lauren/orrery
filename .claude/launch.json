@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "orrery-web",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "orrery.web", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

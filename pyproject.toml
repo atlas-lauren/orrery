@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orrery"
+version = "0.1.0"
+description = "Astrological Configuration Analysis Engine — an empirical hypothesis-testing tool for planetary angular configurations"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "skyfield>=1.49",
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "pandas>=2.1",
+]
+
+[project.optional-dependencies]
+# Web orrery (Part 6) — kept optional so the engine stays importable headless.
+web = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["orrery*"]
+
+[tool.setuptools.package-data]
+orrery = ["config/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
