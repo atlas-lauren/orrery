@@ -863,7 +863,8 @@
     }
 
     async function fetchExact(jd) {
-      if (!precision.enabled) return null;
+      // Wait for the /api/range probe so a static host gets a single 404, not two.
+      if (!precision.enabled || !precision.checked) return null;
       const key = cacheKey(jd);
       if (precision.cache.has(key)) return precision.cache.get(key);
       let res;
