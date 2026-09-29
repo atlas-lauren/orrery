@@ -800,6 +800,67 @@
         if (!o) continue;
         if (force || !(Math.abs(state.jd - o.jdSampled) <= o.period / 4)) sampleOrbit(name, state.jd);
       }
+      updateMoonOrbit(force);
+    }
+
+    // Moon orbit: the locus of where the app places the Moon over one sidereal
+    // month, attached to Earth's group so it travels with Earth. It fades in as
+    // Earth is approached and is invisible from solar-system distances.
+    const MOON_ORBIT_SAMPLES = 128;
+    const moonOrbit = { line: null, geometry: null, jdSampled: NaN, period: 27.321662 };
+    const moonSample = new THREE.Vector3();
+
+    function buildMoonOrbit() {
+      if (!bodies.earth || moonOrbit.line) return;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MOON_ORBIT_SAMPLES * 3), 3));
+      const material = new THREE.LineBasicMaterial({ color: accentOf('moon'), transparent: true, opacity: 0, depthWrite: false });
+      const line = new THREE.LineLoop(geometry, material);
+      line.name = 'moon-orbit';
+      line.frustumCulled = false;
+      line.visible = false;
+      bodies.earth.group.add(line);
+      moonOrbit.line = line;
+      moonOrbit.geometry = geometry;
+      moonOrbit.jdSampled = NaN;
+    }
+
+    function sampleMoonOrbit(jd) {
+      const pos = moonOrbit.geometry.attributes.position;
+      const n = pos.count;
+      const start = jd - moonOrbit.period / 2;
+      const dist = moonSceneDistance();
+      for (let i = 0; i < n; i++) {
+        const t = start + (moonOrbit.period * i) / n;
+        const m = Eph.moonGeocentric(clamp(t, JD_MIN - 36525, JD_MAX + 36525));
+        moonSample.set(m.x, m.z, -m.y);
+        const len = moonSample.length();
+        if (len > 0) moonSample.multiplyScalar(dist / len);
+        pos.setXYZ(i, moonSample.x, moonSample.y, moonSample.z);
+      }
+      pos.needsUpdate = true;
+      moonOrbit.geometry.computeBoundingSphere();
+      moonOrbit.jdSampled = jd;
+    }
+
+    function updateMoonOrbit(force) {
+      if (!moonOrbit.line) buildMoonOrbit();
+      if (!moonOrbit.line) return;
+      if (force || !(Math.abs(state.jd - moonOrbit.jdSampled) <= moonOrbit.period / 4)) sampleMoonOrbit(state.jd);
+    }
+
+    // Invisible while the ring would be under ~12 px on screen, fully drawn above ~40 px.
+    function updateMoonOrbitVisibility() {
+      const line = moonOrbit.line;
+      if (!line) return;
+      const earth = bodies.earth;
+      if (!(state.showOrbits && state.showMoon && earth && earth.screen.visible)) { line.visible = false; return; }
+      const rE = bodyRadius('earth');
+      const ringPx = rE > 0 ? earth.screen.r * (moonSceneDistance() / rE) : 0;
+      const t = clamp((ringPx - 12) / 28, 0, 1);
+      const opacity = 0.45 * t * t * (3 - 2 * t);
+      line.material.opacity = opacity;
+      line.visible = opacity > 0.01;
     }
 
     function applyOrbitVisibility() {
@@ -1741,6 +1802,7 @@
       dom.optTrueSize.addEventListener('change', () => {
         state.trueSize = dom.optTrueSize.checked;
         applyRadii();
+        updateMoonOrbit(true);
         if (state.focus) setFocus(state.focus);
       });
       dom.optPluto.addEventListener('change', () => { state.showPluto = dom.optPluto.checked; applyBodyVisibility(); applyOrbitVisibility(); });
@@ -1867,6 +1929,7 @@
       updateNearPlane();
 
       updateScreenPositions();
+      updateMoonOrbitVisibility();
       updateLabels();
 
       if (state.jd !== lastHeadlineJd) {
