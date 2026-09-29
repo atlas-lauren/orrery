@@ -1166,24 +1166,17 @@
     // priority order (the followed body, then larger apparent discs first), each
     // taking the first slot that clears the labels already placed, every visible
     // disc, and the viewport edge. A label keeps its previous slot while that slot
-    // stays free so labels do not hop between frames. A label pushed beyond the
-    // nearest ring gets a thin leader line back to its body.
+    // stays free so labels do not hop between frames.
 
-    const SVG_NS = 'http://www.w3.org/2000/svg';
     // Screen-space unit directions (y down), in order of preference.
     const LABEL_DIRS = [[1, -1], [1, 1], [-1, -1], [-1, 1], [1, 0], [-1, 0], [0, -1], [0, 1]];
-    const LABEL_RINGS = [6, 26, 48];   // px between the disc edge and the label, per ring
+    const LABEL_RINGS = [2, 9, 18];    // px between the disc edge and the label, per ring
     const LABEL_MARGIN = 3;            // px of clearance between label boxes
-    let leaderSvg = null;
-    const leaderSize = { w: 0, h: 0 };
+    const labelViewport = { w: 0, h: 0 };
 
     function buildLabels() {
       dom.labels.textContent = '';
-      leaderSvg = document.createElementNS(SVG_NS, 'svg');
-      leaderSvg.setAttribute('id', 'leaders');
-      leaderSvg.setAttribute('aria-hidden', 'true');
-      dom.labels.appendChild(leaderSvg);
-      leaderSize.w = 0; leaderSize.h = 0;
+      labelViewport.w = 0; labelViewport.h = 0;
       for (const rec of bodyList) {
         const el = document.createElement('div');
         el.className = 'label';
@@ -1195,13 +1188,6 @@
         rec.label = el;
         rec.labelBox = { w: 0, h: 0 };
         rec.labelSlot = { dir: 0, ring: 0 };
-        const line = document.createElementNS(SVG_NS, 'line');
-        line.setAttribute('stroke', hexColor(rec.accent));
-        line.setAttribute('stroke-opacity', '0.6');
-        line.setAttribute('stroke-width', '1');
-        line.style.display = 'none';
-        leaderSvg.appendChild(line);
-        rec.leader = line;
       }
       dom.labels.classList.toggle('off', !state.showLabels);
       measureLabels();
@@ -1251,8 +1237,7 @@
     }
 
     // Box for a label in the given direction/ring. The box's nearest corner or
-    // edge midpoint sits at the gap point (gx, gy), which is `ring` px past the
-    // disc edge along the direction.
+    // edge midpoint sits `ring` px past the disc edge along the direction.
     function labelRect(rec, dirIndex, ring, out) {
       const s = rec.screen, box = rec.labelBox;
       const d = LABEL_DIRS[dirIndex];
@@ -1262,7 +1247,6 @@
       out.x = gx + d[0] * box.w * 0.5 - box.w * 0.5;
       out.y = gy + d[1] * box.h * 0.5 - box.h * 0.5;
       out.w = box.w; out.h = box.h;
-      out.gx = gx; out.gy = gy;
       return out;
     }
 
@@ -1278,23 +1262,19 @@
 
     const labelOrder = [];
     const placedRects = [];
-    const tmpRect = { x: 0, y: 0, w: 0, h: 0, gx: 0, gy: 0 };
+    const tmpRect = { x: 0, y: 0, w: 0, h: 0 };
 
     function hideLabel(rec) {
       rec.label.style.display = 'none';
-      if (rec.leader) rec.leader.style.display = 'none';
     }
 
     function updateLabels() {
       if (!state.showLabels) return;
       const w = renderer.domElement.clientWidth;
       const h = renderer.domElement.clientHeight;
-      if (leaderSvg && (leaderSize.w !== w || leaderSize.h !== h)) {
-        leaderSize.w = w; leaderSize.h = h;
-        leaderSvg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
-        leaderSvg.setAttribute('width', String(w));
-        leaderSvg.setAttribute('height', String(h));
-        measureLabels();
+      if (labelViewport.w !== w || labelViewport.h !== h) {
+        labelViewport.w = w; labelViewport.h = h;
+        measureLabels();   // the label font size changes with the viewport width
       }
       labelOrder.length = 0;
       for (const rec of bodyList) {
@@ -1329,19 +1309,6 @@
         el.style.display = '';
         el.style.transform = 'translate(' + tmpRect.x.toFixed(1) + 'px, ' + tmpRect.y.toFixed(1) + 'px)';
         el.classList.toggle('selected', state.focus === rec.name);
-        if (!rec.leader) continue;
-        if (slot.ring > 0) {
-          const d = LABEL_DIRS[slot.dir];
-          const k = (d[0] !== 0 && d[1] !== 0) ? Math.SQRT1_2 : 1;
-          const edge = Math.max(rec.screen.r, 3) + 2;
-          rec.leader.setAttribute('x1', (rec.screen.x + d[0] * k * edge).toFixed(1));
-          rec.leader.setAttribute('y1', (rec.screen.y + d[1] * k * edge).toFixed(1));
-          rec.leader.setAttribute('x2', tmpRect.gx.toFixed(1));
-          rec.leader.setAttribute('y2', tmpRect.gy.toFixed(1));
-          rec.leader.style.display = '';
-        } else {
-          rec.leader.style.display = 'none';
-        }
       }
     }
 
