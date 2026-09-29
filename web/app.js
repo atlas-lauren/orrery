@@ -610,7 +610,7 @@
       const record = {
         name, group, tilt, spin, mesh, material, accent, radius,
         clouds: null, atmosphere: null, rings: null, pick: null, marker: null,
-        label: null, labelDot: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false }
+        label: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false }
       };
 
       if (name === 'earth' && tex && tex.cloudsMap) {
@@ -722,7 +722,7 @@
       const record = {
         name: 'sun', group, tilt, spin, mesh, material, accent: accentOf('sun'), radius,
         clouds: null, atmosphere: null, rings: null, pick, marker: null,
-        label: null, labelDot: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false }
+        label: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false }
       };
       bodies.sun = record;
       bodyList.push(record);
@@ -1160,26 +1160,64 @@
     }
 
     // ---- Labels -------------------------------------------------------------------
+    //
+    // Labels are placed each frame by a small collision-avoidance pass. Every body
+    // has eight candidate directions and three distance rings; bodies are placed in
+    // priority order (the followed body, then larger apparent discs first), each
+    // taking the first slot that clears the labels already placed, every visible
+    // disc, and the viewport edge. A label keeps its previous slot while that slot
+    // stays free so labels do not hop between frames. A label pushed beyond the
+    // nearest ring gets a thin leader line back to its body.
+
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+    // Screen-space unit directions (y down), in order of preference.
+    const LABEL_DIRS = [[1, -1], [1, 1], [-1, -1], [-1, 1], [1, 0], [-1, 0], [0, -1], [0, 1]];
+    const LABEL_RINGS = [6, 26, 48];   // px between the disc edge and the label, per ring
+    const LABEL_MARGIN = 3;            // px of clearance between label boxes
+    let leaderSvg = null;
+    const leaderSize = { w: 0, h: 0 };
 
     function buildLabels() {
       dom.labels.textContent = '';
+      leaderSvg = document.createElementNS(SVG_NS, 'svg');
+      leaderSvg.setAttribute('id', 'leaders');
+      leaderSvg.setAttribute('aria-hidden', 'true');
+      dom.labels.appendChild(leaderSvg);
+      leaderSize.w = 0; leaderSize.h = 0;
       for (const rec of bodyList) {
         const el = document.createElement('div');
         el.className = 'label';
         el.style.setProperty('--label-color', hexColor(rec.accent));
-        const dot = document.createElement('span');
-        dot.className = 'dot';
-        const text = document.createElement('span');
-        text.textContent = DISPLAY_NAME[rec.name];
-        el.appendChild(dot);
-        el.appendChild(text);
+        el.textContent = DISPLAY_NAME[rec.name];
         el.style.display = 'none';
         el.addEventListener('click', (ev) => { ev.stopPropagation(); setFocus(rec.name === 'sun' ? null : rec.name); });
         dom.labels.appendChild(el);
         rec.label = el;
-        rec.labelDot = dot;
+        rec.labelBox = { w: 0, h: 0 };
+        rec.labelSlot = { dir: 0, ring: 0 };
+        const line = document.createElementNS(SVG_NS, 'line');
+        line.setAttribute('stroke', hexColor(rec.accent));
+        line.setAttribute('stroke-opacity', '0.6');
+        line.setAttribute('stroke-width', '1');
+        line.style.display = 'none';
+        leaderSvg.appendChild(line);
+        rec.leader = line;
       }
       dom.labels.classList.toggle('off', !state.showLabels);
+      measureLabels();
+      if (document.fonts && document.fonts.ready) document.fonts.ready.then(measureLabels);
+    }
+
+    function measureLabels() {
+      for (const rec of bodyList) {
+        const el = rec.label;
+        if (!el) continue;
+        const wasHidden = el.style.display === 'none';
+        if (wasHidden) el.style.display = '';
+        rec.labelBox.w = el.offsetWidth;
+        rec.labelBox.h = el.offsetHeight;
+        if (wasHidden) el.style.display = 'none';
+      }
     }
 
     const projV = new THREE.Vector3();
@@ -1201,17 +1239,109 @@
       }
     }
 
+    function rectsOverlap(a, b, m) {
+      return a.x < b.x + b.w + m && a.x + a.w + m > b.x && a.y < b.y + b.h + m && a.y + a.h + m > b.y;
+    }
+
+    function rectHitsDisc(r, cx, cy, rad) {
+      const nx = Math.max(r.x, Math.min(cx, r.x + r.w));
+      const ny = Math.max(r.y, Math.min(cy, r.y + r.h));
+      const dx = cx - nx, dy = cy - ny;
+      return dx * dx + dy * dy < rad * rad;
+    }
+
+    // Box for a label in the given direction/ring. The box's nearest corner or
+    // edge midpoint sits at the gap point (gx, gy), which is `ring` px past the
+    // disc edge along the direction.
+    function labelRect(rec, dirIndex, ring, out) {
+      const s = rec.screen, box = rec.labelBox;
+      const d = LABEL_DIRS[dirIndex];
+      const k = (d[0] !== 0 && d[1] !== 0) ? Math.SQRT1_2 : 1;
+      const gap = Math.max(s.r, 3) + LABEL_RINGS[ring];
+      const gx = s.x + d[0] * k * gap, gy = s.y + d[1] * k * gap;
+      out.x = gx + d[0] * box.w * 0.5 - box.w * 0.5;
+      out.y = gy + d[1] * box.h * 0.5 - box.h * 0.5;
+      out.w = box.w; out.h = box.h;
+      out.gx = gx; out.gy = gy;
+      return out;
+    }
+
+    function slotFree(rec, rect, placed, w, h) {
+      if (rect.x < 2 || rect.y < 2 || rect.x + rect.w > w - 2 || rect.y + rect.h > h - 2) return false;
+      for (const p of placed) if (rectsOverlap(rect, p, LABEL_MARGIN)) return false;
+      for (const other of bodyList) {
+        if (other === rec || !other.screen.visible) continue;
+        if (rectHitsDisc(rect, other.screen.x, other.screen.y, Math.max(other.screen.r, 2) + 2)) return false;
+      }
+      return true;
+    }
+
+    const labelOrder = [];
+    const placedRects = [];
+    const tmpRect = { x: 0, y: 0, w: 0, h: 0, gx: 0, gy: 0 };
+
+    function hideLabel(rec) {
+      rec.label.style.display = 'none';
+      if (rec.leader) rec.leader.style.display = 'none';
+    }
+
     function updateLabels() {
       if (!state.showLabels) return;
+      const w = renderer.domElement.clientWidth;
+      const h = renderer.domElement.clientHeight;
+      if (leaderSvg && (leaderSize.w !== w || leaderSize.h !== h)) {
+        leaderSize.w = w; leaderSize.h = h;
+        leaderSvg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+        leaderSvg.setAttribute('width', String(w));
+        leaderSvg.setAttribute('height', String(h));
+        measureLabels();
+      }
+      labelOrder.length = 0;
       for (const rec of bodyList) {
+        if (!rec.label) continue;
+        if (!rec.screen.visible) { hideLabel(rec); continue; }
+        if (rec.labelBox.w === 0) measureLabels();
+        labelOrder.push(rec);
+      }
+      labelOrder.sort((a, b) => {
+        if (a.name === state.focus) return -1;
+        if (b.name === state.focus) return 1;
+        return b.screen.r - a.screen.r;
+      });
+      placedRects.length = 0;
+      for (const rec of labelOrder) {
+        const slot = rec.labelSlot;
+        let found = false;
+        labelRect(rec, slot.dir, slot.ring, tmpRect);
+        if (slotFree(rec, tmpRect, placedRects, w, h)) {
+          found = true;
+        } else {
+          search: for (let ring = 0; ring < LABEL_RINGS.length; ring++) {
+            for (let di = 0; di < LABEL_DIRS.length; di++) {
+              labelRect(rec, di, ring, tmpRect);
+              if (slotFree(rec, tmpRect, placedRects, w, h)) { slot.dir = di; slot.ring = ring; found = true; break search; }
+            }
+          }
+        }
+        if (!found) { hideLabel(rec); continue; }
+        placedRects.push({ x: tmpRect.x, y: tmpRect.y, w: tmpRect.w, h: tmpRect.h });
         const el = rec.label;
-        if (!el) continue;
-        const s = rec.screen;
-        if (!s.visible) { el.style.display = 'none'; continue; }
-        const off = Math.min(s.r * 0.72, 220) + 8;
         el.style.display = '';
-        el.style.transform = 'translate(' + (s.x + off).toFixed(1) + 'px, ' + (s.y - off).toFixed(1) + 'px) translate(0, -100%)';
+        el.style.transform = 'translate(' + tmpRect.x.toFixed(1) + 'px, ' + tmpRect.y.toFixed(1) + 'px)';
         el.classList.toggle('selected', state.focus === rec.name);
+        if (!rec.leader) continue;
+        if (slot.ring > 0) {
+          const d = LABEL_DIRS[slot.dir];
+          const k = (d[0] !== 0 && d[1] !== 0) ? Math.SQRT1_2 : 1;
+          const edge = Math.max(rec.screen.r, 3) + 2;
+          rec.leader.setAttribute('x1', (rec.screen.x + d[0] * k * edge).toFixed(1));
+          rec.leader.setAttribute('y1', (rec.screen.y + d[1] * k * edge).toFixed(1));
+          rec.leader.setAttribute('x2', tmpRect.gx.toFixed(1));
+          rec.leader.setAttribute('y2', tmpRect.gy.toFixed(1));
+          rec.leader.style.display = '';
+        } else {
+          rec.leader.style.display = 'none';
+        }
       }
     }
 
