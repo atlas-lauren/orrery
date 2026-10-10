@@ -430,7 +430,6 @@
   }
   .badge.muted { background: rgba(255,255,255,0.05); border-color: var(--border); color: var(--muted); }
   .badge.exact { background: rgba(120, 220, 160, 0.12); border-color: rgba(120, 220, 160, 0.4); color: #a6ecc4; }
-  .badge.anchored { background: rgba(120, 200, 255, 0.12); border-color: rgba(120, 200, 255, 0.4); color: #b6dcff; }
   #info-rows { flex: 1; overflow: auto; padding: 0 8px 8px; }
   #info-rows::-webkit-scrollbar { width: 8px; }
   #info-rows::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
@@ -462,6 +461,33 @@
   .info-row .sign { color: var(--accent); font-weight: 500; margin-right: 4px; }
   .info-row .dist { grid-column: 2 / span 2; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; justify-content: space-between; gap: 8px; }
   .info-row .dist b { font-weight: 500; color: rgba(230, 233, 242, 0.85); }
+  /* Moons of the followed planet, listed beneath its row: indented, smaller and
+     quieter, with the moon's accent on a smaller dot. The first line carries the
+     distance from the planet's centre in km, the second the same in planet radii
+     and the orbital period. Declared after the hover and selected rules so those
+     still apply to a moon row. */
+  .info-row.minor {
+    padding: 5px 8px 5px 24px;
+    row-gap: 1px;
+    border-radius: 8px;
+  }
+  .info-row.minor .dot { width: 7px; height: 7px; justify-self: center; box-shadow: 0 0 6px var(--row-color, #fff); }
+  .info-row.minor .name { font-weight: 500; font-size: 12px; color: var(--muted); }
+  .info-row.minor .lon { font-size: 12px; color: rgba(230, 233, 242, 0.85); }
+  .info-row.minor .dist { font-size: 11px; }
+  .info-row.minor:hover .name, .info-row.minor.hover .name, .info-row.minor.selected .name { color: var(--text); }
+  .info-row .tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 999px;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border: 1px solid var(--border-strong);
+    vertical-align: 1px;
+  }
   #info-panel .fineprint {
     margin: 0;
     padding: 8px 16px 12px;
@@ -733,7 +759,7 @@
     <kbd>Shift+drag</kbd><span>Timeline: fine scrub, one year either side</span>
   </div>
   <h3>Accuracy</h3>
-  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size.</p>
+  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size. Earth wears NASA Blue Marble imagery (public domain, served from the three.js repository) once it has downloaded, and turns with the real Greenwich sidereal time and the precessing pole of date, so the geography under the Sun is right for any date in range.</p>
 </div>
 
 <aside id="info-panel" class="glass" aria-label="Positions">
@@ -748,7 +774,7 @@
     <span id="element-set" class="badge muted">jpl-1800-2050</span>
   </div>
   <div id="info-rows" role="list"></div>
-  <p class="fineprint">Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. The Moon row is geocentric. Click a row to follow that body.</p>
+  <p class="fineprint">Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. The Moon row is geocentric. Click a row to follow that body. While you follow a planet with moons, they are listed beneath it with their distance from the planet's centre (km and planet radii) and their orbital period.</p>
 </aside>
 
 <section id="controls" class="glass" aria-label="Time controls">

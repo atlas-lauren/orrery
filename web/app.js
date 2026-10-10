@@ -8,6 +8,9 @@
  * is guarded so the app still runs with plain materials if a generator is missing or
  * throws; without moons.js no planet moons are built and the planets fall back to
  * the old rotation about the scene X axis instead of their IAU pole directions.
+ * Earth starts with its procedural textures, then streams in NASA Blue Marble
+ * imagery after start-up, and is oriented from Ephemeris.earthOrientation (mean
+ * pole and equinox of date, Greenwich sidereal time) when that function exists.
  *
  * Sections: constants, calendar helpers, startOrrery (state, moon catalogue, scene
  * setup, bodies, orbits, moon systems, precision mode, camera, UI, frame loop).
@@ -379,6 +382,13 @@
     };
     state.jd = clamp(state.jd, JD_MIN, JD_MAX);
 
+    // Debug handle: the geographic point with the Sun overhead at the current date is
+    // the ground truth the Earth orientation below is checked against.
+    window.__orrery = {
+      subsolar: () => (typeof Eph.subsolarPoint === 'function' ? Eph.subsolarPoint(state.jd) : null),
+      jd: () => state.jd
+    };
+
     const precision = {
       enabled: true,
       checked: false,
@@ -624,6 +634,22 @@
     // lights out on the sunlit hemisphere with it. Updated every frame in updateBodies.
     const earthSunDir = { value: new THREE.Vector3(0, 0, 1) };
 
+    // Masks Earth's emissive city lights to the night side. Installed on the Phong
+    // material whenever it carries an emissive map, procedural or downloaded.
+    function installEarthNightLights(material) {
+      if (material.userData.nightLights) return;
+      material.userData.nightLights = true;
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.uSunDir = earthSunDir;
+        shader.fragmentShader = 'uniform vec3 uSunDir;\n' + shader.fragmentShader.replace(
+          '#include <emissivemap_fragment>',
+          '#include <emissivemap_fragment>\n' +
+          '  totalEmissiveRadiance *= 1.0 - smoothstep(-0.15, 0.05, dot(normalize(vNormal), uSunDir));'
+        );
+      };
+      material.customProgramCacheKey = () => 'earth-night-lights';
+    }
+
     function createPlanetMaterial(name, tex, accent) {
       const hasMap = !!(tex && tex.map);
       if (name === 'earth') {
@@ -638,17 +664,7 @@
         if (tex && tex.specularMap) params.specularMap = tex.specularMap;
         if (tex && tex.emissiveMap) params.emissiveMap = tex.emissiveMap; else params.emissiveIntensity = 0;
         const material = new THREE.MeshPhongMaterial(params);
-        if (params.emissiveMap) {
-          material.onBeforeCompile = (shader) => {
-            shader.uniforms.uSunDir = earthSunDir;
-            shader.fragmentShader = 'uniform vec3 uSunDir;\n' + shader.fragmentShader.replace(
-              '#include <emissivemap_fragment>',
-              '#include <emissivemap_fragment>\n' +
-              '  totalEmissiveRadiance *= 1.0 - smoothstep(-0.15, 0.05, dot(normalize(vNormal), uSunDir));'
-            );
-          };
-          material.customProgramCacheKey = () => 'earth-night-lights';
-        }
+        if (params.emissiveMap) installEarthNightLights(material);
         return material;
       }
       const params = { roughness: 0.9, metalness: 0 };
@@ -732,6 +748,21 @@
       return 1;
     }
 
+    // Earth's cloud shell, a child of the tilt group so it shares the pole; its own
+    // rotation.y is set per frame. Built at start-up from the procedural map, or when
+    // the downloaded one arrives if visuals.js supplied none.
+    function attachEarthClouds(record, map) {
+      const cloudMat = new THREE.MeshStandardMaterial({
+        map, transparent: true, depthWrite: false, roughness: 1, metalness: 0, opacity: 0.85
+      });
+      const clouds = new THREE.Mesh(new THREE.SphereGeometry(1.012, 96, 64), cloudMat);
+      clouds.name = 'earth-clouds';
+      clouds.renderOrder = 1;
+      record.tilt.add(clouds);
+      record.clouds = clouds;
+      return clouds;
+    }
+
     // opts.moonOf names the parent planet of a planet moon and opts.container the
     // Object3D the body's group is added to (the scene by default).
     function buildBody(name, tex, opts) {
@@ -760,21 +791,12 @@
       const record = {
         name, group, tilt, spin, mesh, material, accent, radius, spinSign,
         isMoon: !!moonOf, parent: moonOf, parentRadiusKm: moonOf ? moonData[name].parentRadiusKm : 0,
-        system: null, orbit: null, labelOn: true,
+        distKm: 0, system: null, orbit: null, labelOn: true,
         clouds: null, atmosphere: null, rings: null, pick: null, marker: null,
         label: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false, inView: false }
       };
 
-      if (name === 'earth' && tex && tex.cloudsMap) {
-        const cloudMat = new THREE.MeshStandardMaterial({
-          map: tex.cloudsMap, transparent: true, depthWrite: false, roughness: 1, metalness: 0, opacity: 0.85
-        });
-        const clouds = new THREE.Mesh(new THREE.SphereGeometry(1.012, 96, 64), cloudMat);
-        clouds.name = 'earth-clouds';
-        clouds.renderOrder = 1;
-        tilt.add(clouds);
-        record.clouds = clouds;
-      }
+      if (name === 'earth' && tex && tex.cloudsMap) attachEarthClouds(record, tex.cloudsMap);
 
       const atmo = ATMOSPHERES[name];
       if (atmo) {
@@ -914,6 +936,119 @@
       }
       const followed = state.focus ? bodies[state.focus] : null;
       if (followed && !(followed.isMoon ? followed.system.enabled : followed.visible)) setFocus(null);
+      syncInfoMoonRows();
+    }
+
+    // ---- Earth imagery ----------------------------------------------------------------
+    //
+    // Earth starts with the procedural textures like every other body so the first
+    // frame never waits on the network; the NASA Blue Marble set shipped with the
+    // three.js repository (public domain) is then streamed in once the loading overlay
+    // is gone and swapped into the materials texture by texture. Any file that fails
+    // to arrive leaves its procedural counterpart in place.
+
+    const EARTH_TEXTURE_BASE = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r170/examples/textures/planets/';
+    const EARTH_TEXTURE_FILES = {
+      map: 'earth_atmos_2048.jpg',
+      normal: 'earth_normal_2048.jpg',
+      specular: 'earth_specular_2048.jpg',
+      lights: 'earth_lights_2048.png',
+      clouds: 'earth_clouds_1024.png'
+    };
+    const earthImagery = { started: false, failed: false, loaded: 0 };
+
+    function disposeTexture(tex, keep) {
+      if (tex && tex !== keep && typeof tex.dispose === 'function') tex.dispose();
+    }
+
+    // Swaps one downloaded texture into Earth's materials; returns false for a key it
+    // does not know. The replaced procedural texture is disposed.
+    function applyEarthTexture(key, tex) {
+      const rec = bodies.earth;
+      if (!rec || !rec.material) return false;
+      const material = rec.material;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      if (key === 'map') {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const old = material.map;
+        material.map = tex;
+        material.color.setHex(0xffffff);   // a map-less material carried the accent colour
+        material.needsUpdate = true;
+        disposeTexture(old, tex);
+      } else if (key === 'normal') {
+        const oldBump = material.bumpMap;
+        material.normalMap = tex;
+        // Y negated to match this asset's handedness, as the three.js examples do.
+        material.normalScale.set(0.8, -0.8);
+        material.bumpMap = null;
+        material.needsUpdate = true;
+        disposeTexture(oldBump, tex);
+      } else if (key === 'specular') {
+        const old = material.specularMap;
+        material.specularMap = tex;
+        material.needsUpdate = true;
+        disposeTexture(old, tex);
+      } else if (key === 'lights') {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const old = material.emissiveMap;
+        material.emissiveMap = tex;
+        if (!(material.emissiveIntensity > 0)) {   // visuals.js supplied no night lights
+          material.emissive.setHex(0xffe2a8);
+          material.emissiveIntensity = 0.9;
+        }
+        installEarthNightLights(material);
+        material.needsUpdate = true;
+        disposeTexture(old, tex);
+      } else if (key === 'clouds') {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        if (!rec.clouds) {
+          attachEarthClouds(rec, tex);
+        } else {
+          const cloudMat = rec.clouds.material;
+          const old = cloudMat.map;
+          cloudMat.map = tex;
+          cloudMat.transparent = true;
+          cloudMat.needsUpdate = true;
+          disposeTexture(old, tex);
+        }
+      } else {
+        return false;
+      }
+      return true;
+    }
+
+    function loadEarthImagery() {
+      if (earthImagery.started || !bodies.earth || typeof THREE.TextureLoader !== 'function') return;
+      earthImagery.started = true;
+      let loader;
+      try {
+        loader = new THREE.TextureLoader();
+        loader.setCrossOrigin('anonymous');
+      } catch (err) {
+        console.info('Earth imagery unavailable; keeping the procedural globe', err);
+        return;
+      }
+      const fail = (key, err) => {
+        if (earthImagery.failed) return;
+        earthImagery.failed = true;
+        console.info('Earth imagery could not be fetched (' + key + '); the procedural textures stay where needed', err || '');
+      };
+      for (const key of Object.keys(EARTH_TEXTURE_FILES)) {
+        try {
+          loader.load(EARTH_TEXTURE_BASE + EARTH_TEXTURE_FILES[key], (tex) => {
+            try {
+              if (applyEarthTexture(key, tex)) earthImagery.loaded++; else disposeTexture(tex, null);
+            } catch (err) {
+              disposeTexture(tex, null);
+              fail(key, err);
+            }
+          }, undefined, (err) => fail(key, err));
+        } catch (err) {
+          fail(key, err);
+        }
+      }
     }
 
     // ---- Orbits ---------------------------------------------------------------------
@@ -1147,6 +1282,7 @@
             const p = Moons.position(m.name, jd, moonPosOut) || moonPosOut;
             moonLocal.set(p.x, p.z, -p.y);
             const len = moonLocal.length();
+            m.distKm = (p.r > 0 ? p.r : len) * AU_KM;   // shown in the info panel
             if (len > 0) moonLocal.multiplyScalar(moonSceneDistanceFor(m, len * AU_KM) / len);
             m.group.position.copy(moonLocal);
             m.spin.rotation.y = spinAngle(m.name, jd) * m.spinSign;
@@ -1156,6 +1292,11 @@
           sys.enabled = false;
           console.warn('Moons.position failed for the ' + DISPLAY_NAME[sys.planet] + ' system; hiding it', err);
           hideMoonSystem(sys);
+          // Same rule as applyBodyVisibility: a followed moon of a hidden system is
+          // released, and the info panel drops the system's sub-rows.
+          const followed = state.focus ? bodies[state.focus] : null;
+          if (followed && followed.isMoon && followed.system === sys) setFocus(null);
+          syncInfoMoonRows();
         }
       }
     }
@@ -1774,6 +1915,7 @@
         controls.minDistance = 2;
         if (changed) applyPreset('default', 1100);
       }
+      syncInfoMoonRows();
     }
 
     function applyPreset(preset, duration) {
@@ -1786,6 +1928,7 @@
       dom.focusChip.hidden = true;
       controls.minDistance = 2;
       for (const key in rowByName) rowByName[key].classList.remove('selected');
+      syncInfoMoonRows();
       applyPreset('default', 1000);
     }
 
@@ -1859,6 +2002,7 @@
 
     function buildInfoRows() {
       dom.infoRows.textContent = '';
+      removeInfoMoonRows();
       for (const name of INFO_BODIES) {
         const row = document.createElement('div');
         row.className = 'info-row';
@@ -1898,6 +2042,107 @@
       if (el.textContent !== text) el.textContent = text;
     }
 
+    // Moons of the followed planet (or of the followed moon's planet) are listed as
+    // sub-rows beneath that planet's row, in rowByName / rowParts like the planets so
+    // hover and selection work unchanged. The DOM is rebuilt only when the system
+    // shown changes; the figures refresh with the rest of the panel.
+    const infoMoons = { planet: null, recs: [] };
+
+    function infoMoonSystemFor(focus) {
+      if (!focus || !state.showPlanetMoons) return null;
+      const md = moonData[focus];
+      const planet = md ? md.parent : focus;
+      for (const sys of moonSystems) {
+        if (sys.planet === planet) return (sys.enabled && !sys.broken && sys.moons.length) ? sys : null;
+      }
+      return null;
+    }
+
+    function formatPeriod(days) {
+      const digits = days < 1 ? 3 : (days < 10 ? 2 : 1);
+      return days.toFixed(digits) + ' d';
+    }
+
+    function removeInfoMoonRows() {
+      for (const rec of infoMoons.recs) {
+        const row = rowByName[rec.name];
+        if (row && row.parentNode) row.parentNode.removeChild(row);
+        delete rowByName[rec.name];
+        delete rowParts[rec.name];
+      }
+      infoMoons.recs.length = 0;
+      infoMoons.planet = null;
+    }
+
+    function buildInfoMoonRow(rec) {
+      const md = moonData[rec.name];
+      const row = document.createElement('div');
+      row.className = 'info-row minor';
+      row.setAttribute('role', 'listitem');
+      row.dataset.body = rec.name;
+      row.style.setProperty('--row-color', hexColor(rec.accent));
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'name';
+      nameEl.textContent = DISPLAY_NAME[rec.name];
+      const km = document.createElement('span');
+      km.className = 'lon';
+      const dist = document.createElement('span');
+      dist.className = 'dist';
+      const radii = document.createElement('span');
+      const period = document.createElement('span');
+      period.textContent = formatPeriod(md.periodDays);
+      if (md.retrograde) {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+        tag.textContent = 'retrograde';
+        period.appendChild(tag);
+      }
+      dist.appendChild(radii);
+      dist.appendChild(period);
+      row.appendChild(dot);
+      row.appendChild(nameEl);
+      row.appendChild(km);
+      row.appendChild(dist);
+      row.classList.toggle('selected', state.focus === rec.name);
+      row.classList.toggle('hover', state.hover === rec.name);
+      row.addEventListener('click', () => setFocus(rec.name));
+      rowByName[rec.name] = row;
+      rowParts[rec.name] = { km, radii };
+      return row;
+    }
+
+    // Called whenever the focus or the moon toggle changes.
+    function syncInfoMoonRows() {
+      const sys = infoMoonSystemFor(state.focus);
+      const planet = sys ? sys.planet : null;
+      if (planet === infoMoons.planet) return;
+      removeInfoMoonRows();
+      const parentRow = planet ? rowByName[planet] : null;
+      if (!sys || !parentRow) return;
+      let after = parentRow;
+      for (const rec of sys.moons) {
+        const row = buildInfoMoonRow(rec);
+        after.insertAdjacentElement('afterend', row);
+        after = row;
+        infoMoons.recs.push(rec);
+      }
+      infoMoons.planet = planet;
+      updateInfoMoonRows();
+    }
+
+    function updateInfoMoonRows() {
+      for (const rec of infoMoons.recs) {
+        const parts = rowParts[rec.name];
+        if (!parts) continue;
+        const km = rec.distKm;
+        if (!(km > 0)) { setText(parts.km, '—'); setText(parts.radii, ''); continue; }
+        setText(parts.km, Math.round(km).toLocaleString('en-US') + ' km');
+        setText(parts.radii, (km / rec.parentRadiusKm).toFixed(1) + ' R');
+      }
+    }
+
     function updateInfoPanel(positions, source) {
       const b = positions.bodies;
       const earth = b.earth;
@@ -1923,10 +2168,14 @@
           setText(parts.dEarth, 'Earth ' + d.toFixed(3) + ' AU');
         }
       }
+      updateInfoMoonRows();
       let badge;
       let cls = 'badge';
-      if (source === 'exact') { badge = prettyEphemeris(precision.ephemeris) + ' (exact)'; cls += ' exact'; }
-      else if (source === 'anchored') { badge = prettyEphemeris(precision.ephemeris) + ' (exact anchor)'; cls += ' anchored'; }
+      // 'exact' (positions fetched for this very instant) and 'anchored' (exact
+      // positions a few hours old carried forward with Keplerian motion) differ
+      // by arcseconds at most, and in real-time playback they alternate every
+      // second; one label keeps the panel from reflowing.
+      if (source === 'exact' || source === 'anchored') { badge = prettyEphemeris(precision.ephemeris) + ' (exact)'; cls += ' exact'; }
       else badge = 'Keplerian (JPL elements)';
       setText(dom.sourceBadge, badge);
       if (dom.sourceBadge.className !== cls) dom.sourceBadge.className = cls;
@@ -2187,6 +2436,66 @@
       return TWO_PI * (turns - Math.floor(turns)) + 0.4;
     }
 
+    // Earth's real orientation. The tilt basis sends the spin group's +X to the mean
+    // equinox of date and +Y to the mean pole of date; the map's longitude 0 faces
+    // local +X and a positive spin turns it eastward (counterclockwise seen from the
+    // pole), so rotation.y = GMST puts Greenwich at hour angle zero of the equinox
+    // and the geography under the Sun agrees with Ephemeris.subsolarPoint. Without
+    // Ephemeris.earthOrientation the IAU pole and mean rotation period stand in, as
+    // for every other planet. Clouds share the frame plus a slow drift.
+    const earthOrient = { available: typeof Eph.earthOrientation === 'function' };
+    const earthAxisX = new THREE.Vector3();
+    const earthAxisY = new THREE.Vector3();
+    const earthAxisZ = new THREE.Vector3();
+    const earthBasis = new THREE.Matrix4();
+    const CLOUD_DRIFT_PERIOD_DAYS = 31;
+
+    function cloudDrift(jd) {
+      const turns = (jd - J2000) / CLOUD_DRIFT_PERIOD_DAYS;
+      return TWO_PI * (turns - Math.floor(turns));
+    }
+
+    function disableEarthOrientation(rec, reason, err) {
+      earthOrient.available = false;
+      console.warn('Ephemeris.earthOrientation ' + reason + '; Earth falls back to its IAU pole and mean rotation', err || '');
+      rec.tilt.rotation.set(0, 0, 0);
+      rec.spinSign = orientBody(rec.tilt, 'earth', null);
+    }
+
+    // Returns true when the real orientation was applied, false to use the fallback.
+    function orientEarth(rec, jd) {
+      if (!earthOrient.available) return false;
+      let o = null;
+      try {
+        o = Eph.earthOrientation(jd);
+      } catch (err) {
+        disableEarthOrientation(rec, 'threw', err);
+        return false;
+      }
+      if (!o || !o.pole || !o.equinox || !Number.isFinite(o.gmst)) {
+        disableEarthOrientation(rec, 'returned an unexpected value');
+        return false;
+      }
+      earthAxisX.set(o.equinox.x, o.equinox.z, -o.equinox.y);
+      earthAxisY.set(o.pole.x, o.pole.z, -o.pole.y);
+      const lx = earthAxisX.lengthSq();
+      const ly = earthAxisY.lengthSq();
+      if (!(lx > 1e-12) || !(ly > 1e-12) || !Number.isFinite(lx) || !Number.isFinite(ly)) {
+        disableEarthOrientation(rec, 'returned a degenerate frame');
+        return false;
+      }
+      earthAxisX.normalize();
+      earthAxisY.normalize();
+      // Re-orthogonalise around the pole so the basis is a pure rotation.
+      earthAxisZ.crossVectors(earthAxisX, earthAxisY).normalize();
+      earthAxisX.crossVectors(earthAxisY, earthAxisZ);
+      earthBasis.makeBasis(earthAxisX, earthAxisY, earthAxisZ);
+      rec.tilt.quaternion.setFromRotationMatrix(earthBasis);
+      rec.spin.rotation.y = o.gmst;
+      if (rec.clouds) rec.clouds.rotation.y = o.gmst + cloudDrift(jd);
+      return true;
+    }
+
     // Scene distance of the Moon from Earth's centre. Body radii are tens of times larger
     // than the distance scale even in true-scale mode (0.06 for Earth versus 0.0009 at
     // 22 units per AU), so the Moon is placed relative to Earth's current radius: at
@@ -2205,6 +2514,8 @@
         const p = b[name];
         if (!rec || !p) continue;
         toScene(p, rec.group.position);
+        if (name === 'earth' && orientEarth(rec, jd)) continue;
+        // Fallback for Earth, and the regular path for every other planet.
         rec.spin.rotation.y = spinAngle(name, jd) * rec.spinSign;
         if (rec.clouds) rec.clouds.rotation.y = cloudAngle(jd);
       }
@@ -2369,7 +2680,10 @@
 
       await new Promise((resolve) => setTimeout(resolve, 250));
       dom.loading.classList.add('fade');
-      setTimeout(() => { if (dom.loading && dom.loading.parentNode) dom.loading.parentNode.removeChild(dom.loading); }, 1000);
+      setTimeout(() => {
+        if (dom.loading && dom.loading.parentNode) dom.loading.parentNode.removeChild(dom.loading);
+        loadEarthImagery();
+      }, 1000);
     }
 
     boot().catch((err) => {

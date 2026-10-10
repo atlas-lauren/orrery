@@ -14,6 +14,10 @@
  *             with the ecliptic precession of chapter 21.
  *   Delta T : F. Espenak & J. Meeus, polynomial expressions (NASA Eclipse web
  *             site), valid -1999 .. +3000 with the long-term parabola outside.
+ *   Earth   : IAU 2006 precession (Capitaine, Wallace & Chapront 2003, the
+ *             psi_A / omega_A / chi_A angles) for the mean pole and equinox
+ *             of date; Earth rotation angle (IAU 2000) and GMST (IAU 2006)
+ *             for the Greenwich meridian. Nutation is ignored.
  *
  * Frame: heliocentric ecliptic J2000, right-handed, AU. x toward the vernal
  * equinox, z toward ecliptic north. Longitudes in [0, 360) degrees.
@@ -586,6 +590,124 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Earth orientation: mean celestial pole and mean equinox of date (IAU 2006
+  // precession, Capitaine, Wallace & Chapront 2003) expressed in ecliptic J2000
+  // coordinates, plus Greenwich mean sidereal time. Nutation is ignored.
+  // ---------------------------------------------------------------------------
+
+  var ARCSEC = DEG / 3600;
+  var TWO_PI = 2 * Math.PI;
+  var EPS0_ARCSEC = 84381.406; // IAU 2006 mean obliquity at J2000 (23.4392794 deg)
+
+  // IAU 2006 precession polynomials (arcseconds), T = TT Julian centuries from
+  // J2000. psiA / omegaA / chiA are the equatorial 4-angle set that SOFA's
+  // pmat06 and Skyfield's compute_precession use, so the mean equator and
+  // equinox of date come out exactly (the ecliptic drift is included); epsA
+  // and pA are reported for reference.
+  function precessionAngles(T) {
+    var T2 = T * T, T3 = T2 * T, T4 = T3 * T, T5 = T4 * T;
+    return {
+      // mean obliquity of the ecliptic of date
+      epsA: EPS0_ARCSEC - 46.836769 * T - 0.0001831 * T2 + 0.00200340 * T3
+        - 0.000000576 * T4 - 0.0000000434 * T5,
+      // accumulated general precession in longitude
+      pA: 5028.796195 * T + 1.1054348 * T2 + 0.00007964 * T3
+        - 0.000023857 * T4 - 0.0000000383 * T5,
+      // luni-solar precession: node of the mean equator of date on the J2000
+      // ecliptic sits at ecliptic longitude -psiA (it regresses westward)
+      psiA: 5038.481507 * T - 1.0790069 * T2 - 0.00114045 * T3
+        + 0.000132851 * T4 - 0.0000000951 * T5,
+      // inclination of the mean equator of date to the J2000 ecliptic
+      omegaA: EPS0_ARCSEC - 0.025754 * T + 0.0512623 * T2 - 0.00772503 * T3
+        - 0.000000467 * T4 + 0.0000003337 * T5,
+      // planetary precession: the mean equinox of date lies chiA east of that
+      // node, measured along the mean equator of date
+      chiA: 10.556403 * T - 2.3814292 * T2 - 0.00121197 * T3
+        + 0.000170663 * T4 - 0.0000000560 * T5
+    };
+  }
+
+  // Earth rotation angle (IAU 2000), radians in [0, 2pi). UT is taken as UT1.
+  // The day count is split into whole and fractional days so the angle keeps
+  // full precision thousands of years from J2000.
+  function earthRotationAngle(jdUT1) {
+    var du = jdUT1 - J2000;
+    var f = du - Math.floor(du);
+    return TWO_PI * mod(f + 0.7790572732640 + 0.00273781191135448 * du, 1);
+  }
+
+  // Greenwich mean sidereal time (IAU 2006), radians in [0, 2pi).
+  function greenwichMeanSiderealTime(jdUT1, T) {
+    var T2 = T * T, T3 = T2 * T, T4 = T3 * T, T5 = T4 * T;
+    var poly = 0.014506 + 4612.156534 * T + 1.3915817 * T2 - 0.00000044 * T3
+      - 0.000029956 * T4 - 0.0000000368 * T5;
+    return mod(earthRotationAngle(jdUT1) + poly * ARCSEC, TWO_PI);
+  }
+
+  // Orientation of the Earth at a UT Julian Date, in ecliptic J2000:
+  //   pole    unit vector of the mean celestial pole of date
+  //   equinox unit vector toward the mean equinox of date (perpendicular to
+  //           pole; equals (1, 0, 0) at J2000)
+  //   gmst    Greenwich mean sidereal time, radians in [0, 2pi): the angle
+  //           from the equinox to the Greenwich meridian, counterclockwise
+  //           seen from the pole
+  //   obliquityDeg, precessionDeg   eps_A and p_A of date, degrees
+  function earthOrientation(jd) {
+    var jdUT = toNumber(jd, 'jd');
+    var T = (ttFromUt(jdUT) - J2000) / 36525;
+    var a = precessionAngles(T);
+    var psi = a.psiA * ARCSEC, omega = a.omegaA * ARCSEC, chi = a.chiA * ARCSEC;
+    var sPsi = Math.sin(psi), cPsi = Math.cos(psi);
+    var sOm = Math.sin(omega), cOm = Math.cos(omega);
+    var sChi = Math.sin(chi), cChi = Math.cos(chi);
+
+    // Pole: ecliptic longitude 90 deg - psiA, ecliptic latitude 90 deg - omegaA.
+    var px = sOm * sPsi, py = sOm * cPsi, pz = cOm;
+    // Node of the equator of date on the J2000 ecliptic (longitude -psiA) and
+    // the direction 90 deg east of it along the equator of date (pole x node).
+    var nx = cPsi, ny = -sPsi;
+    var mx = cOm * sPsi, my = cOm * cPsi, mz = -sOm;
+    // Equinox of date = node rotated by chiA about the pole.
+    var qx = nx * cChi + mx * sChi;
+    var qy = ny * cChi + my * sChi;
+    var qz = mz * sChi;
+
+    return {
+      pole: { x: px, y: py, z: pz },
+      equinox: { x: qx, y: qy, z: qz },
+      gmst: greenwichMeanSiderealTime(jdUT, T),
+      obliquityDeg: a.epsA / 3600,
+      precessionDeg: a.pA / 3600
+    };
+  }
+
+  // Geographic point with the Sun at the zenith: { lat, lon } in degrees, lon
+  // east-positive in [-180, 180]. The Sun direction is the geometric
+  // -(heliocentric Earth) vector; the Earth-fixed frame has X = equinox of
+  // date rotated by gmst about the pole (the Greenwich meridian), Y = pole x X,
+  // Z = pole. Texture longitude 0 of a globe must point along X.
+  function subsolarPoint(jd) {
+    var jdUT = toNumber(jd, 'jd');
+    var o = earthOrientation(jdUT);
+    var e = heliocentric('earth', jdUT);
+    var r = e.r > 0 ? e.r : 1;
+    var sx = -e.x / r, sy = -e.y / r, sz = -e.z / r;
+    var p = o.pole, q = o.equinox;
+    var cg = Math.cos(o.gmst), sg = Math.sin(o.gmst);
+    // w = pole x equinox (90 deg east of the equinox along the equator)
+    var wx = p.y * q.z - p.z * q.y, wy = p.z * q.x - p.x * q.z, wz = p.x * q.y - p.y * q.x;
+    var xx = q.x * cg + wx * sg, xy = q.y * cg + wy * sg, xz = q.z * cg + wz * sg;
+    var yx = p.y * xz - p.z * xy, yy = p.z * xx - p.x * xz, yz = p.x * xy - p.y * xx;
+    var fx = sx * xx + sy * xy + sz * xz;
+    var fy = sx * yx + sy * yy + sz * yz;
+    var fz = sx * p.x + sy * p.y + sz * p.z;
+    return {
+      lat: Math.asin(Math.max(-1, Math.min(1, fz))) * RAD,
+      lon: Math.atan2(fy, fx) * RAD
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // Convenience
   // ---------------------------------------------------------------------------
 
@@ -622,6 +744,8 @@
     moonGeocentric: moonGeocentric,
     all: all,
     orbitalPeriodDays: orbitalPeriodDays,
+    earthOrientation: earthOrientation,
+    subsolarPoint: subsolarPoint,
     range: range,
     elementSet: elementSet,
     J2000: J2000,

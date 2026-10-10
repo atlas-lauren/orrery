@@ -188,8 +188,14 @@ and a "Now" button. Click a planet or its row to follow it; Esc returns to the
 Sun. Keys: Space, arrow keys, N (now), R (reset view), L (labels), O (orbits),
 H (help), 1–4 camera presets.
 
-**Display.** Every planet texture, the Sun's surface, corona, atmospheres,
-starfield and Milky Way are generated procedurally at load (no image assets).
+**Display.** Earth uses real NASA Blue Marble imagery (colour, normal, ocean
+specular, night lights and clouds, loaded from the three.js repository on
+jsdelivr; the procedural globe is kept when offline), and its rotation follows
+Greenwich sidereal time with IAU 2006 precession, so the correct geography
+faces the Sun at every date (`scripts/verify_earth_orientation.py` checks the
+sub-solar point against Skyfield to 0.015 degrees). Every other texture, the
+Sun's surface, corona, atmospheres, starfield and Milky Way are generated
+procedurally at load.
 Distances are compressed by default (angular positions stay exact; only the
 radial distance is scaled) with true-scale distance and true-size toggles in
 the settings panel. Dates are shown in the proleptic Gregorian calendar with
