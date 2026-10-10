@@ -619,6 +619,524 @@
     return { map: map };
   };
 
+  /* ------------------------------------------------------------------ */
+  /* Small bodies (planetary moons): one parameterised generator         */
+  /* ------------------------------------------------------------------ */
+
+  /*
+   * Stamp one crater at an explicit (lon, lat) with angular radius r (radians).
+   * Same bowl / rim / ejecta profile as stampCraters, plus an optional central peak
+   * (peak = height of the peak relative to the bowl depth, 0 for none).
+   */
+  function stampCraterAt(height, w, h, lon, lat, r, depth, peak) {
+    var cosLat = Math.max(0.08, Math.cos(lat));
+    var cx = lon / TAU * w, cy = (0.5 - lat / Math.PI) * h;
+    var ry = r / Math.PI * h * 1.35, rx = ry / cosLat;
+    if (rx > w * 0.5) rx = w * 0.5;
+    var x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx);
+    var y0 = Math.max(0, Math.floor(cy - ry)), y1 = Math.min(h - 1, Math.ceil(cy + ry));
+    var rimW = 0.78, x, y, dx, dy, d, v, xx;
+    for (y = y0; y <= y1; y++) {
+      dy = (y + 0.5 - cy) / ry;
+      for (x = x0; x <= x1; x++) {
+        dx = (x + 0.5 - cx) / rx;
+        d = Math.sqrt(dx * dx + dy * dy) / 0.74;
+        if (d >= 1.35) continue;
+        if (d < rimW) {
+          v = -1 + (d / rimW) * (d / rimW) * 0.9;
+          if (peak) v += peak * (1 - smoothstep(0.0, 0.24, d));
+        } else if (d < 1.0) {
+          v = -0.1 + Math.sin(((d - rimW) / (1.0 - rimW)) * Math.PI * 0.5) * 0.55;
+        } else {
+          v = 0.45 * (1 - (d - 1.0) / 0.35);
+          v = v * v * 0.9;
+        }
+        xx = x; if (xx < 0) xx += w; else if (xx >= w) xx -= w;
+        height[y * w + xx] += v * depth;
+      }
+    }
+  }
+
+  /*
+   * Add a soft radial blob (weights 0..1, additive) to a Float32 field, in equirectangular
+   * space with the same polar stretching as craters. core is the flat-topped fraction of
+   * the radius; when ring is true the profile is an annulus peaking at d = core.
+   */
+  function stampBlobAt(field, w, h, lon, lat, r, core, ring, strength) {
+    var cosLat = Math.max(0.08, Math.cos(lat));
+    var cx = lon / TAU * w, cy = (0.5 - lat / Math.PI) * h;
+    var ry = r / Math.PI * h, rx = ry / cosLat;
+    if (rx > w * 0.5) rx = w * 0.5;
+    var x0 = Math.floor(cx - rx), x1 = Math.ceil(cx + rx);
+    var y0 = Math.max(0, Math.floor(cy - ry)), y1 = Math.min(h - 1, Math.ceil(cy + ry));
+    var x, y, dx, dy, d, v, xx;
+    for (y = y0; y <= y1; y++) {
+      dy = (y + 0.5 - cy) / ry;
+      for (x = x0; x <= x1; x++) {
+        dx = (x + 0.5 - cx) / rx;
+        d = Math.sqrt(dx * dx + dy * dy);
+        if (d >= 1) continue;
+        v = 1 - smoothstep(core, 1.0, d);
+        if (ring) v *= smoothstep(core * 0.5, core, d);
+        xx = x; if (xx < 0) xx += w; else if (xx >= w) xx -= w;
+        field[y * w + xx] += v * strength;
+      }
+    }
+  }
+
+  /* Bilinear upsample of a lattice (lw x lh) to w x h, wrapping in longitude, clamping at the poles. */
+  function upsampleWrap(src, lw, lh, out, w, h) {
+    var x, y, fx, fy, x0, x1, y0, y1, tx, ty, r0, r1, a, b, c, d, o;
+    for (y = 0; y < h; y++) {
+      fy = ((y + 0.5) / h) * lh - 0.5;
+      y0 = Math.floor(fy); ty = fy - y0; y1 = y0 + 1;
+      if (y0 < 0) y0 = 0;
+      if (y1 > lh - 1) y1 = lh - 1;
+      r0 = y0 * lw; r1 = y1 * lw; o = y * w;
+      for (x = 0; x < w; x++) {
+        fx = ((x + 0.5) / w) * lw - 0.5;
+        x0 = Math.floor(fx); tx = fx - x0; x1 = x0 + 1;
+        if (x0 < 0) x0 += lw;
+        if (x1 >= lw) x1 -= lw;
+        a = src[r0 + x0]; b = src[r0 + x1]; c = src[r1 + x0]; d = src[r1 + x1];
+        a += (b - a) * tx; c += (d - c) * tx;
+        out[o + x] = a + (c - a) * ty;
+      }
+    }
+  }
+
+  /*
+   * Evaluate fn(px, py, pz, lat, lon) on a coarse sphere-sampled lattice (w >> div by h >> div)
+   * and bilinearly upsample to w x h. Cheap way to get low-frequency fields at full resolution;
+   * the lattice values come from 3D noise on the sphere so the result stays seamless and pinch-free.
+   */
+  function latticeField(w, h, div, fn) {
+    var lw = Math.max(8, w >> div), lh = Math.max(4, h >> div);
+    var lattice = new Float32Array(lw * lh);
+    forEachTexel(lw, lh, function (px, py, pz, lat, lon, x, y) {
+      lattice[y * lw + x] = fn(px, py, pz, lat, lon);
+    });
+    var out = new Float32Array(w * h);
+    upsampleWrap(lattice, lw, lh, out, w, h);
+    return out;
+  }
+
+  function wrapLon(dlon) {
+    if (dlon > Math.PI) return dlon - TAU;
+    if (dlon < -Math.PI) return dlon + TAU;
+    return dlon;
+  }
+
+  /*
+   * genSmallBody(w, h, o): cratered / icy / volcanic small-body colour + bump maps.
+   *
+   * Cost model (512 x 256): macro fields on a 128 x 64 lattice, fine grain on 256 x 128,
+   * craters stamped into a height field, and one compose pass. Only o.feature evaluates
+   * noise per texel (2-octave ridged), so a moon costs roughly 15-40 ms in Node.
+   *
+   * Options (all optional except seed and colors):
+   *   seed            noise / rng seed
+   *   colors          [dark, light, tint?]  base palette; tint is mixed in by a low-frequency field
+   *   baseFreq/Amt    large-scale albedo variation (default 3.0 / 0.45)
+   *   fineFreq/Amt    grain frequency and its palette influence (14 / 0.12); grain: shading amount (0.08)
+   *   speckle         per-texel hash noise amplitude (0.025)
+   *   tintAmt         how much of colors[2] shows (0.35)
+   *   craters         [[count at 512x256, rMin, rMax, depth], ...]   random craters
+   *   bigCraters      [[lon, lat, r, depth, peak], ...]              named craters
+   *   craterTone/Shade/Bump   crater height -> palette shift / shading / bump (0.3 / 0.4 / 0.45)
+   *   blob            { color, lo, hi, amt, freq }   maria / albedo provinces from a low-frequency field
+   *   feature         { kind: 'lines'|'cells', freq, stretch, octaves, lo, hi, color, amt, shade, bump, mask, hemi }
+   *                   per-texel ridged noise: 'lines' thresholds it into thin lineae / canyons / wisps (one octave
+   *                   gives long unbroken curves), 'cells' uses it continuously (grooved or cantaloupe terrain).
+   *                   mask: 'blob' | 'inv' | 'hemi' restricts it to the blob provinces, their inverse, or a hemisphere
+   *   polar           { color, from, to, amt, north, south, wobble }  polar tint (radians of latitude)
+   *   twoTone         { color, lon, w, h, wobble }  dark ellipse centred on (lon, 0): Iapetus' Cassini Regio
+   *   ridge           { width, bump, shade }        equatorial ridge
+   *   stripes         { color, spacing, width, length, angle, latStart, latFull, amt, bump }  south-polar tiger stripes
+   *   spots           { count, rMin, rMax, core, ringChance, ringScale, dark, ring, bump, fixed }  volcanic centres
+   */
+  function genSmallBody(w, h, o) {
+    var noise = makeNoise(o.seed), rng = mulberry32(o.seed * 31 + 7);
+    var n = w * h, area = n / (512 * 256);
+    var map = new Uint8ClampedArray(n * 4), bump = new Uint8ClampedArray(n * 4);
+    var k, i;
+
+    /* --- craters -> height field --- */
+    var height = new Float32Array(n);
+    var cr = o.craters || [];
+    for (k = 0; k < cr.length; k++) {
+      stampCraters(height, w, h, rng, Math.round(cr[k][0] * area), cr[k][1], cr[k][2], cr[k][3]);
+    }
+    var big = o.bigCraters || [];
+    for (k = 0; k < big.length; k++) {
+      stampCraterAt(height, w, h, big[k][0], big[k][1], big[k][2], big[k][3], big[k][4] || 0);
+    }
+
+    /* --- macro fields (coarse lattice, upsampled) --- */
+    var bf = o.baseFreq || 3.0;
+    var base = latticeField(w, h, 2, function (px, py, pz) {
+      return fbm(noise, px * bf, py * bf, pz * bf, 3, 2.1, 0.5);
+    });
+    var blobOpt = o.blob || null, needBlob = !!blobOpt || !!(o.feature && o.feature.mask && o.feature.mask !== 'hemi') || !!o.twoTone;
+    var blf = (blobOpt && blobOpt.freq) || 1.4;
+    var blob = needBlob ? latticeField(w, h, 2, function (px, py, pz) {
+      return fbm(noise, px * blf + 17.3, py * blf + 3.1, pz * blf - 8.7, 3, 2.0, 0.5);
+    }) : null;
+    var tintCol = o.colors[2] || null;
+    var tintF = tintCol ? latticeField(w, h, 2, function (px, py, pz) {
+      return fbm(noise, px * 1.3 + 41.2, py * 1.3 - 6.5, pz * 1.3 + 12.9, 2, 2.0, 0.5);
+    }) : null;
+    var ff = o.fineFreq || 14;
+    var fine = latticeField(w, h, 1, function (px, py, pz) {
+      return fbm(noise, px * ff + 5.5, py * ff - 2.2, pz * ff + 9.1, 2, 2.0, 0.5);
+    });
+
+    /* --- spots (volcanic centres / bright rings) --- */
+    var sp = o.spots || null, spotCore = null, spotRing = null;
+    if (sp) {
+      spotCore = new Float32Array(n); spotRing = new Float32Array(n);
+      var sc = sp.count || 0, sr, slon, slat, ring;
+      for (k = 0; k < sc; k++) {
+        slon = rng() * TAU;
+        slat = Math.asin(rng() * 1.8 - 0.9);
+        sr = sp.rMin + (sp.rMax - sp.rMin) * Math.pow(rng(), 1.6);
+        ring = rng() < (sp.ringChance || 0);
+        stampBlobAt(spotCore, w, h, slon, slat, sr, sp.core === undefined ? 0.45 : sp.core, false, 0.75 + 0.35 * rng());
+        if (ring) stampBlobAt(spotRing, w, h, slon, slat, sr * ((sp.ringScale || 2.2) * (0.85 + 0.3 * rng())), 0.5 + 0.15 * rng(), true, 0.4 + 0.35 * rng());
+      }
+      var fx = sp.fixed || [];
+      for (k = 0; k < fx.length; k++) {
+        stampBlobAt(spotCore, w, h, fx[k][0], fx[k][1], fx[k][2], sp.core === undefined ? 0.45 : sp.core, false, 1.0);
+        stampBlobAt(spotRing, w, h, fx[k][0], fx[k][1], fx[k][2] * (sp.ringScale || 2.2), 0.55, true, 1.0);
+      }
+    }
+
+    /* --- resolve options once (the compose loop must stay branch-light) --- */
+    var dark = o.colors[0], light = o.colors[1];
+    var baseAmt = o.baseAmt === undefined ? 0.45 : o.baseAmt;
+    var fineAmt = o.fineAmt === undefined ? 0.12 : o.fineAmt;
+    var grain = o.grain === undefined ? 0.08 : o.grain;
+    var fineBump = o.fineBump === undefined ? 0.10 : o.fineBump;
+    var speckle = o.speckle === undefined ? 0.025 : o.speckle;
+    var tintAmt = o.tintAmt === undefined ? 0.35 : o.tintAmt;
+    var crTone = o.craterTone === undefined ? 0.3 : o.craterTone;
+    var crShade = o.craterShade === undefined ? 0.4 : o.craterShade;
+    var crBump = o.craterBump === undefined ? 0.45 : o.craterBump;
+    var blobColor = blobOpt ? blobOpt.color : null;
+    var blobLo = blobOpt ? blobOpt.lo : 0.0, blobHi = blobOpt ? blobOpt.hi : 0.3;
+    var blobAmt = blobOpt ? (blobOpt.amt === undefined ? 1 : blobOpt.amt) : 0;
+    var maskLo = (o.feature && o.feature.maskLo !== undefined) ? o.feature.maskLo : blobLo;
+    var maskHi = (o.feature && o.feature.maskHi !== undefined) ? o.feature.maskHi : blobHi;
+
+    var fe = o.feature || null;
+    var feLines = fe ? fe.kind === 'lines' : false;
+    var feFreq = fe ? fe.freq : 1, feStretch = fe ? (fe.stretch || 1) : 1, feOct = fe ? (fe.octaves || 2) : 2;
+    var feLo = fe ? fe.lo : 0, feHi = fe ? fe.hi : 1;
+    var feColor = fe ? (fe.color || null) : null;
+    var feAmt = fe ? (fe.amt === undefined ? 1 : fe.amt) : 0;
+    var feShade = fe ? (fe.shade || 0) : 0, feBump = fe ? (fe.bump || 0) : 0;
+    var feMask = fe ? (fe.mask === 'blob' ? 1 : (fe.mask === 'inv' ? 2 : (fe.mask === 'hemi' ? 3 : 0))) : 0;
+    var hx = 1, hy = 0, hz = 0;
+    if (fe && fe.hemi) { hx = fe.hemi[0]; hy = fe.hemi[1]; hz = fe.hemi[2] || 0; }
+
+    var po = o.polar || null;
+    var poFrom = po ? po.from : 0, poTo = po ? po.to : 1;
+    var poAmt = po ? (po.amt === undefined ? 1 : po.amt) : 0;
+    var poN = po ? po.north !== false : false, poS = po ? po.south !== false : false;
+    var poWob = po ? (po.wobble === undefined ? 0.06 : po.wobble) : 0;
+    var poColor = po ? po.color : null;
+
+    var tt = o.twoTone || null;
+    var ttLon = tt ? tt.lon : 0, ttW = tt ? tt.w : 1, ttH = tt ? tt.h : 1, ttWob = tt ? (tt.wobble === undefined ? 0.25 : tt.wobble) : 0;
+    var ttColor = tt ? tt.color : null;
+
+    var rg = o.ridge || null;
+    var rgW = rg ? rg.width : 0, rgBump = rg ? rg.bump : 0, rgShade = rg ? (rg.shade || 0) : 0;
+
+    var st = o.stripes || null;
+    var stCos = st ? Math.cos(st.angle || 0) : 1, stSin = st ? Math.sin(st.angle || 0) : 0;
+    var stSpacing = st ? st.spacing : 1, stWidth = st ? st.width : 0, stLen = st ? st.length : 0;
+    var stLatStart = st ? st.latStart : 0, stLatFull = st ? st.latFull : 0;
+    var stAmt = st ? (st.amt === undefined ? 1 : st.amt) : 0, stBump = st ? (st.bump || 0) : 0, stColor = st ? st.color : null;
+
+    var spDark = sp ? (sp.dark || null) : null, spRing = sp ? (sp.ring || null) : null, spBump = sp ? (sp.bump || 0) : 0;
+    var seed = o.seed | 0;
+
+    var c = [0, 0, 0];
+
+    forEachTexel(w, h, function (px, py, pz, lat, lon, x, y, idx) {
+      i = y * w + x;
+      var b0 = base[i], fn = fine[i], hcr = clamp(height[i], -1.4, 1.2);
+      var speck = (hash2(x, y, seed) - 0.5) * speckle;
+      var t = clamp01(0.5 + b0 * baseAmt + fn * fineAmt + hcr * crTone);
+      mix3(dark, light, t, c);
+      if (tintCol) mix3(c, tintCol, tintAmt * smoothstep(-0.15, 0.35, tintF[i]), c);
+      var region = 0;
+      if (blob) region = smoothstep(blobLo, blobHi, blob[i]);
+      if (blobColor) mix3(c, blobColor, region * blobAmt, c);
+      var shade = 1 + hcr * crShade + fn * grain + speck;
+      var bmp = 0.5 + hcr * crBump + fn * fineBump + speck * 0.5;
+      var m;
+      if (fe) {
+        var f = ridged(noise, px * feFreq + 9.4, py * feFreq + 4.2, pz * feFreq * feStretch - 3.3, feOct, 2.0, 0.5);
+        var mask = 1;
+        if (feMask === 1) mask = smoothstep(maskLo, maskHi, blob[i]);
+        else if (feMask === 2) mask = 1 - smoothstep(maskLo, maskHi, blob[i]);
+        else if (feMask === 3) mask = smoothstep(-0.2, 0.6, px * hx + py * hy + pz * hz);
+        if (feLines) {
+          m = smoothstep(feLo, feHi, f) * mask;
+          if (feColor) mix3(c, feColor, m * feAmt, c);
+          shade += m * feShade;
+          bmp += m * feBump;
+        } else {
+          m = (f - 0.5) * mask;
+          shade += m * feAmt;
+          bmp += m * feBump;
+          if (feColor) mix3(c, feColor, clamp01(m * 2) * 0.5, c);
+        }
+      }
+      if (po) {
+        var p = 0;
+        if (poN) p += smoothstep(poFrom, poTo, lat + fn * poWob);
+        if (poS) p += smoothstep(poFrom, poTo, -lat + fn * poWob);
+        mix3(c, poColor, clamp01(p) * poAmt, c);
+      }
+      if (tt) {
+        var dl = wrapLon(lon - ttLon) / ttW, dla = lat / ttH;
+        var dd = Math.sqrt(dl * dl + dla * dla) + blob[i] * ttWob;
+        m = 1 - smoothstep(0.82, 1.1, dd);
+        mix3(c, ttColor, m, c);
+      }
+      if (rg) {
+        var rr = 1 - smoothstep(0, rgW, Math.abs(lat));
+        bmp += rr * rgBump;
+        shade += rr * rgShade;
+      }
+      if (st && lat < stLatStart) {
+        /* tangent-plane coordinates about the south pole */
+        var s = px * stCos + py * stSin, u = -px * stSin + py * stCos;
+        var kk = Math.round(s / stSpacing - 0.5);
+        if (kk >= -2 && kk <= 1) {
+          var ds = Math.abs(s - (kk + 0.5) * stSpacing) + fn * 0.01;
+          var along = 1 - smoothstep(stLen * 0.7, stLen, Math.abs(u + fn * 0.05));
+          m = (1 - smoothstep(stWidth * 0.5, stWidth, ds)) * along * smoothstep(-stLatStart, -stLatFull, -lat);
+          mix3(c, stColor, m * stAmt, c);
+          bmp += m * stBump;
+          shade += m * stBump * 0.3;
+        }
+      }
+      if (sp) {
+        var a = clamp01(spotCore[i]), r2 = clamp01(spotRing[i]);
+        if (spRing) mix3(c, spRing, r2, c);
+        if (spDark) mix3(c, spDark, a, c);
+        bmp += a * spBump;
+      }
+      /* floors: overlapping craters must not go black, and a 0 in either map then only ever means NaN */
+      if (shade < 0.2) shade = 0.2;
+      put(map, idx, c[0] * shade, c[1] * shade, c[2] * shade);
+      bmp = clamp(bmp, 0.02, 1);
+      put(bump, idx, bmp, bmp, bmp);
+    });
+    return { map: map, bumpMap: bump };
+  }
+
+  /* Palette shorthands */
+  var GREY_DARK = [0.34, 0.34, 0.34], GREY_LIGHT = [0.66, 0.66, 0.65];
+  var ICE_DARK = [0.66, 0.67, 0.66], ICE_LIGHT = [0.90, 0.90, 0.89];
+
+  /*
+   * Per-moon recipes. accent is the label / orbit colour used by the app (PLANET_STYLE).
+   * Order matches Moons.SYSTEMS (distance order within each planet).
+   */
+  var MOON_SPECS = {
+    /* Mars */
+    phobos: {
+      seed: 3001, accent: 0x9a8c7e,
+      colors: [[0.19, 0.17, 0.15], [0.42, 0.38, 0.34], [0.38, 0.30, 0.24]],
+      baseFreq: 2.6, baseAmt: 0.42, fineAmt: 0.14, grain: 0.11, speckle: 0.035,
+      craters: [[45, 0.03, 0.10, 0.7], [380, 0.008, 0.03, 0.55]],
+      bigCraters: [[0.9, 0.12, 0.40, 0.95, 0]],
+      craterShade: 0.45, craterBump: 0.5,
+      feature: { kind: 'lines', freq: 2.0, stretch: 3.5, octaves: 1, lo: 0.92, hi: 0.975, color: [0.15, 0.13, 0.11], amt: 0.5, shade: -0.10, bump: -0.18 }
+    },
+    deimos: {
+      seed: 3002, accent: 0xa4988c,
+      colors: [[0.25, 0.22, 0.19], [0.47, 0.43, 0.38], [0.44, 0.36, 0.28]],
+      baseFreq: 2.2, baseAmt: 0.38, fineAmt: 0.12, grain: 0.09, speckle: 0.03,
+      craters: [[14, 0.04, 0.12, 0.45], [160, 0.01, 0.04, 0.35]],
+      craterShade: 0.3, craterBump: 0.35, craterTone: 0.2
+    },
+
+    /* Jupiter */
+    io: {
+      seed: 3101, accent: 0xe8a83a,
+      colors: [[0.74, 0.60, 0.20], [0.92, 0.86, 0.52], [0.84, 0.50, 0.16]],
+      baseFreq: 2.2, baseAmt: 0.5, fineFreq: 10, fineAmt: 0.10, grain: 0.05, speckle: 0.02, tintAmt: 0.6, fineBump: 0.06,
+      blob: { color: [0.90, 0.92, 0.78], lo: 0.12, hi: 0.40, amt: 0.85, freq: 1.8 },
+      polar: { color: [0.55, 0.36, 0.20], from: 0.85, to: 1.45, amt: 0.45, wobble: 0.12 },
+      spots: { count: 48, rMin: 0.025, rMax: 0.10, core: 0.35, ringChance: 0.45, ringScale: 2.4,
+               dark: [0.20, 0.14, 0.09], ring: [0.66, 0.22, 0.08], bump: -0.25 }
+    },
+    europa: {
+      seed: 3102, accent: 0xdcd6c6,
+      colors: [[0.80, 0.78, 0.70], [0.95, 0.94, 0.91], [0.78, 0.66, 0.50]],
+      baseFreq: 2.8, baseAmt: 0.3, fineAmt: 0.06, grain: 0.04, speckle: 0.015, tintAmt: 0.45, fineBump: 0.05,
+      craters: [[6, 0.012, 0.035, 0.35]],
+      craterShade: 0.3, craterBump: 0.3, craterTone: 0.1,
+      blob: { color: [0.72, 0.58, 0.44], lo: 0.18, hi: 0.42, amt: 0.6, freq: 2.4 },
+      feature: { kind: 'lines', freq: 2.2, stretch: 0.8, octaves: 1, lo: 0.905, hi: 0.965, color: [0.52, 0.32, 0.20], amt: 0.85, shade: -0.02, bump: 0.16 }
+    },
+    ganymede: {
+      seed: 3103, accent: 0xaa9f90,
+      colors: [[0.56, 0.54, 0.50], [0.74, 0.73, 0.70], [0.62, 0.55, 0.46]],
+      baseFreq: 2.4, baseAmt: 0.35, fineAmt: 0.10, grain: 0.07, speckle: 0.025,
+      craters: [[24, 0.03, 0.08, 0.55], [220, 0.008, 0.03, 0.5]],
+      craterShade: 0.4, craterBump: 0.45,
+      blob: { color: [0.30, 0.26, 0.22], lo: 0.02, hi: 0.30, amt: 0.9, freq: 1.5 },
+      feature: { kind: 'cells', freq: 9.0, stretch: 1.6, lo: 0, hi: 1, amt: 0.30, bump: 0.40, mask: 'inv' }
+    },
+    callisto: {
+      seed: 3104, accent: 0x8c8073,
+      colors: [[0.24, 0.21, 0.18], [0.50, 0.46, 0.41], [0.42, 0.34, 0.26]],
+      baseFreq: 2.8, baseAmt: 0.42, fineAmt: 0.14, grain: 0.10, speckle: 0.035,
+      craters: [[40, 0.03, 0.10, 0.75], [300, 0.01, 0.03, 0.65], [900, 0.005, 0.012, 0.5]],
+      bigCraters: [[2.4, 0.25, 0.30, 0.6, 0.6]],
+      craterShade: 0.55, craterBump: 0.5, craterTone: 0.45
+    },
+
+    /* Saturn */
+    mimas: {
+      seed: 3201, accent: 0xbcbcbc,
+      colors: [[0.50, 0.50, 0.50], [0.80, 0.80, 0.79]],
+      baseFreq: 3.0, baseAmt: 0.3, fineAmt: 0.10, grain: 0.07, speckle: 0.03,
+      craters: [[34, 0.03, 0.10, 0.7], [320, 0.01, 0.03, 0.6], [700, 0.005, 0.012, 0.5]],
+      bigCraters: [[0.9, 0.0, 0.35, 1.5, 0.55]],
+      craterShade: 0.5, craterBump: 0.55, craterTone: 0.25
+    },
+    enceladus: {
+      seed: 3202, accent: 0xe8eff6,
+      colors: [[0.86, 0.88, 0.91], [0.97, 0.98, 1.0]],
+      baseFreq: 2.6, baseAmt: 0.18, fineAmt: 0.05, grain: 0.03, speckle: 0.012, fineBump: 0.05,
+      craters: [[10, 0.02, 0.06, 0.4], [90, 0.006, 0.02, 0.35]],
+      craterShade: 0.3, craterBump: 0.35, craterTone: 0.1,
+      polar: { color: [0.74, 0.82, 0.92], from: 0.95, to: 1.25, amt: 0.55, north: false, wobble: 0.08 },
+      stripes: { color: [0.56, 0.66, 0.82], spacing: 0.13, width: 0.012, length: 0.28, angle: 0.6, latStart: -0.9, latFull: -1.15, amt: 0.8, bump: -0.25 },
+      feature: { kind: 'lines', freq: 2.6, stretch: 2.5, octaves: 1, lo: 0.92, hi: 0.975, color: [0.72, 0.80, 0.90], amt: 0.5, shade: -0.03, bump: -0.10 }
+    },
+    tethys: {
+      seed: 3203, accent: 0xd2d2ce,
+      colors: [[0.62, 0.62, 0.60], [0.90, 0.90, 0.88]],
+      baseFreq: 2.8, baseAmt: 0.28, fineAmt: 0.10, grain: 0.06, speckle: 0.025,
+      craters: [[30, 0.03, 0.09, 0.6], [280, 0.008, 0.03, 0.55]],
+      bigCraters: [[4.2, 0.45, 0.42, 0.7, 0.4]],
+      craterShade: 0.45, craterBump: 0.5,
+      feature: { kind: 'lines', freq: 2.4, stretch: 0.45, octaves: 1, lo: 0.92, hi: 0.975, color: [0.97, 0.97, 0.96], amt: 0.8, shade: 0.06, bump: -0.12, mask: 'blob', maskLo: -0.05, maskHi: 0.25 }
+    },
+    dione: {
+      seed: 3204, accent: 0xcbcac4,
+      colors: [[0.58, 0.58, 0.56], [0.88, 0.87, 0.85]],
+      baseFreq: 2.6, baseAmt: 0.3, fineAmt: 0.10, grain: 0.06, speckle: 0.025,
+      craters: [[26, 0.03, 0.09, 0.6], [240, 0.008, 0.03, 0.5]],
+      craterShade: 0.45, craterBump: 0.5,
+      feature: { kind: 'lines', freq: 2.6, stretch: 0.4, octaves: 1, lo: 0.90, hi: 0.965, color: [0.98, 0.98, 0.97], amt: 0.95, shade: 0.12, bump: 0.10, mask: 'hemi', hemi: [-1, 0, 0] }
+    },
+    rhea: {
+      seed: 3205, accent: 0xc6c4be,
+      colors: [[0.56, 0.56, 0.54], [0.86, 0.86, 0.84]],
+      baseFreq: 3.0, baseAmt: 0.3, fineAmt: 0.11, grain: 0.07, speckle: 0.03,
+      craters: [[40, 0.03, 0.09, 0.65], [360, 0.008, 0.03, 0.55], [700, 0.004, 0.01, 0.45]],
+      craterShade: 0.5, craterBump: 0.5,
+      feature: { kind: 'lines', freq: 2.4, stretch: 0.4, octaves: 1, lo: 0.92, hi: 0.98, color: [0.96, 0.96, 0.95], amt: 0.7, shade: 0.08, bump: 0.06, mask: 'hemi', hemi: [-1, 0, 0] }
+    },
+    titan: {
+      seed: 3206, accent: 0xe0913a,
+      colors: [[0.80, 0.55, 0.20], [0.92, 0.70, 0.34], [0.86, 0.60, 0.24]],
+      baseFreq: 2.0, baseAmt: 0.16, fineFreq: 8, fineAmt: 0.04, grain: 0.02, speckle: 0.006, fineBump: 0.02, tintAmt: 0.3,
+      polar: { color: [0.72, 0.52, 0.26], from: 0.95, to: 1.45, amt: 0.35, wobble: 0.15 }
+    },
+    iapetus: {
+      seed: 3207, accent: 0xb5a58e,
+      colors: [[0.64, 0.62, 0.57], [0.86, 0.85, 0.81], [0.72, 0.62, 0.50]],
+      baseFreq: 2.8, baseAmt: 0.3, fineAmt: 0.10, grain: 0.07, speckle: 0.03,
+      craters: [[36, 0.03, 0.10, 0.65], [300, 0.008, 0.03, 0.55]],
+      craterShade: 0.45, craterBump: 0.5,
+      twoTone: { color: [0.19, 0.12, 0.08], lon: 0.0, w: 2.1, h: 0.85, wobble: 0.3 },
+      ridge: { width: 0.05, bump: 0.35, shade: 0.06 }
+    },
+
+    /* Uranus */
+    miranda: {
+      seed: 3301, accent: 0xb4b4b4,
+      colors: [[0.44, 0.44, 0.44], [0.72, 0.72, 0.71]],
+      baseFreq: 2.6, baseAmt: 0.36, fineAmt: 0.10, grain: 0.07, speckle: 0.03,
+      craters: [[22, 0.03, 0.08, 0.55], [200, 0.008, 0.03, 0.5]],
+      craterShade: 0.4, craterBump: 0.45,
+      blob: { color: [0.36, 0.36, 0.37], lo: 0.08, hi: 0.32, amt: 0.6, freq: 1.7 },
+      feature: { kind: 'cells', freq: 7.0, stretch: 2.2, lo: 0, hi: 1, amt: 0.34, bump: 0.45, mask: 'blob' }
+    },
+    ariel: {
+      seed: 3302, accent: 0xd1d1cd,
+      colors: [[0.58, 0.58, 0.56], [0.86, 0.86, 0.84]],
+      baseFreq: 2.8, baseAmt: 0.3, fineAmt: 0.10, grain: 0.06, speckle: 0.025,
+      craters: [[20, 0.02, 0.07, 0.5], [220, 0.007, 0.025, 0.45]],
+      craterShade: 0.4, craterBump: 0.45,
+      feature: { kind: 'lines', freq: 2.2, stretch: 0.6, octaves: 1, lo: 0.89, hi: 0.96, color: [0.95, 0.95, 0.94], amt: 0.9, shade: 0.06, bump: -0.30, mask: 'blob', maskLo: -0.1, maskHi: 0.2 }
+    },
+    umbriel: {
+      seed: 3303, accent: 0x8c8c8c,
+      colors: [[0.22, 0.22, 0.22], [0.42, 0.42, 0.42]],
+      baseFreq: 3.0, baseAmt: 0.3, fineAmt: 0.10, grain: 0.07, speckle: 0.03,
+      craters: [[36, 0.03, 0.09, 0.6], [340, 0.008, 0.03, 0.55], [600, 0.004, 0.01, 0.45]],
+      bigCraters: [[2.0, 0.15, 0.12, 0.6, 0]],
+      craterShade: 0.45, craterBump: 0.5,
+      spots: { count: 0, fixed: [[2.0, 0.15, 0.10]], core: 0.55, ringScale: 1.0, ring: [0.80, 0.80, 0.78], bump: 0 }
+    },
+    titania: {
+      seed: 3304, accent: 0xaba7a1,
+      colors: [[0.40, 0.38, 0.36], [0.66, 0.64, 0.62]],
+      baseFreq: 2.8, baseAmt: 0.32, fineAmt: 0.10, grain: 0.07, speckle: 0.03,
+      craters: [[24, 0.03, 0.09, 0.55], [260, 0.008, 0.03, 0.5]],
+      craterShade: 0.42, craterBump: 0.45,
+      feature: { kind: 'lines', freq: 1.8, stretch: 0.6, octaves: 1, lo: 0.92, hi: 0.975, color: [0.54, 0.52, 0.50], amt: 0.7, shade: -0.10, bump: -0.28, mask: 'blob', maskLo: 0.0, maskHi: 0.25 }
+    },
+    oberon: {
+      seed: 3305, accent: 0xa59b91,
+      colors: [[0.34, 0.31, 0.28], [0.62, 0.59, 0.55], [0.50, 0.40, 0.32]],
+      baseFreq: 3.0, baseAmt: 0.32, fineAmt: 0.11, grain: 0.08, speckle: 0.03, tintAmt: 0.3,
+      craters: [[40, 0.03, 0.10, 0.65], [360, 0.008, 0.03, 0.55], [500, 0.004, 0.01, 0.45]],
+      craterShade: 0.5, craterBump: 0.5, craterTone: 0.45
+    },
+
+    /* Neptune */
+    triton: {
+      seed: 3401, accent: 0xe6c2c2,
+      colors: [[0.74, 0.66, 0.64], [0.90, 0.86, 0.85], [0.84, 0.70, 0.66]],
+      baseFreq: 2.4, baseAmt: 0.28, fineAmt: 0.06, grain: 0.04, speckle: 0.015, tintAmt: 0.4, fineBump: 0.05,
+      craters: [[4, 0.015, 0.04, 0.35]],
+      craterShade: 0.3, craterBump: 0.3, craterTone: 0.1,
+      blob: { color: [0.70, 0.62, 0.60], lo: 0.02, hi: 0.32, amt: 0.5, freq: 1.4 },
+      feature: { kind: 'cells', freq: 18.0, stretch: 1.0, lo: 0, hi: 1, amt: 0.18, bump: 0.40, mask: 'blob' },
+      polar: { color: [0.96, 0.92, 0.92], from: 0.10, to: 0.55, amt: 0.9, north: false, wobble: 0.18 }
+    },
+
+    /* Pluto */
+    charon: {
+      seed: 3501, accent: 0xa89a8e,
+      colors: [[0.46, 0.45, 0.44], [0.70, 0.69, 0.68], [0.60, 0.54, 0.48]],
+      baseFreq: 2.6, baseAmt: 0.32, fineAmt: 0.10, grain: 0.07, speckle: 0.03, tintAmt: 0.3,
+      craters: [[20, 0.03, 0.08, 0.55], [200, 0.008, 0.03, 0.5]],
+      craterShade: 0.42, craterBump: 0.45,
+      polar: { color: [0.42, 0.27, 0.21], from: 0.85, to: 1.30, amt: 0.9, south: false, wobble: 0.22 },
+      feature: { kind: 'lines', freq: 1.6, stretch: 3.0, octaves: 1, lo: 0.925, hi: 0.975, color: [0.40, 0.39, 0.38], amt: 0.6, shade: -0.12, bump: -0.30 }
+    }
+  };
+
+  var MOON_NAMES = Object.keys(MOON_SPECS);
+
+  MOON_NAMES.forEach(function (name) {
+    pixels[name] = function (w, h) { return genSmallBody(w, h, MOON_SPECS[name]); };
+  });
+
   /* --- Ring textures: w x h RGBA, u along radius (inner -> outer) ------- */
   pixels.ring = function (name, w, h) {
     var out = new Uint8ClampedArray(w * h * 4);
@@ -959,6 +1477,7 @@
     mercury: 512, venus: 512, earth: 1024, mars: 512, jupiter: 1024, saturn: 1024,
     uranus: 512, neptune: 512, pluto: 512, moon: 512, sun: 512
   };
+  MOON_NAMES.forEach(function (name) { DEFAULT_SIZE[name] = 512; });
 
   function planetTextures(name, size) {
     var w = size || DEFAULT_SIZE[name] || 1024;
@@ -1174,6 +1693,8 @@
     neptune: { color: 0x5f7fff },
     pluto: { color: 0xd8c2b0 }
   };
+  /* label / orbit accent for each planetary moon (grey and tan tints, Io and Titan orange, Triton pink) */
+  MOON_NAMES.forEach(function (name) { PLANET_STYLE[name] = { color: MOON_SPECS[name].accent }; });
 
   var ATMOSPHERE = {
     earth: { color: 0x4d8dff, power: 3.0, intensity: 1.2 },
@@ -1200,6 +1721,7 @@
     DEFAULT_SIZE: DEFAULT_SIZE,
     /* pure helpers (no THREE / DOM) for tests and tooling */
     pixels: pixels,
+    smallBody: { generate: genSmallBody, specs: MOON_SPECS, names: MOON_NAMES },
     noise: { makeNoise: makeNoise, fbm: fbm, ridged: ridged, warped: warped, mulberry32: mulberry32 },
     shaders: {
       GLSL_NOISE: GLSL_NOISE, SUN_VERT: SUN_VERT, SUN_FRAG: SUN_FRAG, CORONA_VERT: CORONA_VERT,

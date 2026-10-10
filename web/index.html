@@ -89,6 +89,17 @@
     transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease, opacity 0.2s ease;
     will-change: transform;
   }
+  /* Moons of the other planets: smaller and dimmer than planet labels. Declared
+     before the hover and selected rules so those still win on a moon. */
+  .label.minor {
+    font-size: 9.5px;
+    padding: 1px 6px;
+    letter-spacing: 0.06em;
+    opacity: 0.78;
+    color: color-mix(in srgb, var(--label-color, #fff) 40%, rgba(214, 219, 230, 0.8));
+    background: rgba(6, 9, 20, 0.34);
+  }
+  .label.minor:hover, .label.minor.selected { opacity: 1; }
   .label:hover { color: #fff; border-color: var(--border-strong); background: rgba(6, 9, 20, 0.6); }
   .label.selected {
     color: var(--accent);
@@ -638,6 +649,7 @@
     .date-form #in-datetime { width: 100%; }
     #timeline-hint { display: none; }
     .label { font-size: 10px; padding: 1px 6px; }
+    .label.minor { font-size: 9px; padding: 0 5px; }
   }
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -687,6 +699,7 @@
   <h3>Bodies</h3>
   <div class="row"><label for="opt-pluto">Show Pluto</label><input class="switch" type="checkbox" id="opt-pluto" checked></div>
   <div class="row"><label for="opt-moon">Show Moon</label><input class="switch" type="checkbox" id="opt-moon" checked></div>
+  <div class="row"><label for="opt-planet-moons">Planet moons <span class="sub">Major moons, revealed when zoomed in</span></label><input class="switch" type="checkbox" id="opt-planet-moons" checked></div>
   <h3>Camera</h3>
   <div class="preset-grid">
     <button class="btn" type="button" id="preset-inner">Inner system <span class="kbd">1</span></button>
@@ -720,7 +733,7 @@
     <kbd>Shift+drag</kbd><span>Timeline: fine scrub, one year either side</span>
   </div>
   <h3>Accuracy</h3>
-  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Axial tilts are approximate (tilted about the scene X axis) and radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe.</p>
+  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size.</p>
 </div>
 
 <aside id="info-panel" class="glass" aria-label="Positions">
@@ -808,6 +821,7 @@
 </div>
 
 <script src="ephemeris.js"></script>
+<script src="moons.js"></script>
 <script src="visuals.js"></script>
 <script src="app.js"></script>
 <script type="importmap">

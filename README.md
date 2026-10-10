@@ -195,6 +195,15 @@ radial distance is scaled) with true-scale distance and true-size toggles in
 the settings panel. Dates are shown in the proleptic Gregorian calendar with
 astronomical year numbering (year 0 = 1 BCE).
 
+**Moons.** Earth's Moon plus twenty major moons (Phobos, Deimos; Io, Europa,
+Ganymede, Callisto; Mimas, Enceladus, Tethys, Dione, Rhea, Titan, Iapetus;
+Miranda, Ariel, Umbriel, Titania, Oberon; Triton; Charon) orbit their planets
+using JPL mean orbital elements (`web/moons.js`, checked against JPL Horizons
+by `scripts/verify_moons.py`: all twenty agree to within a few degrees of
+orbital phase). Planets are oriented by their IAU poles, so moons orbit in
+the same plane as the rings. For every planet except Earth the moons, their
+orbits and labels fade in only when you zoom in close to that planet.
+
 API: `GET /api/range`, `GET /api/positions?jd=<UT Julian Date>` or
 `?iso=<UTC timestamp>` return heliocentric ecliptic J2000 x/y/z in AU (Moon
 geocentric).
@@ -205,8 +214,8 @@ geocentric).
 orrery/            importable engine (no web dependency)
   astro.py         astronomical core (Part 1)
   web.py           FastAPI backend for the web orrery (Part 6)
-web/               the browser orrery (index.html, app.js, ephemeris.js, visuals.js)
-scripts/           verify_ephemeris.py — JS element tables vs Skyfield/DE441
+web/               the browser orrery (index.html, app.js, ephemeris.js, moons.js, visuals.js)
+scripts/           verify_ephemeris.py (planets vs Skyfield/DE441), verify_moons.py (moons vs Horizons)
 tests/             pytest suite
 data/              downloaded ephemeris kernels (git-ignored)
 pyproject.toml

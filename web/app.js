@@ -4,11 +4,13 @@
  * Classic script (no modules). Exposes a single global, window.startOrrery(bundle),
  * which the inline bootstrap module in index.html calls once three.js and its addons
  * have loaded. Depends on window.Ephemeris (ephemeris.js) and, optionally,
- * window.OrreryVisuals (visuals.js); every visuals call is guarded so the app still
- * runs with plain materials if a generator is missing or throws.
+ * window.OrreryVisuals (visuals.js) and window.Moons (moons.js). Every visuals call
+ * is guarded so the app still runs with plain materials if a generator is missing or
+ * throws; without moons.js no planet moons are built and the planets fall back to
+ * the old rotation about the scene X axis instead of their IAU pole directions.
  *
- * Sections: constants, calendar helpers, startOrrery (state, scene setup, bodies,
- * orbits, precision mode, camera, UI, frame loop).
+ * Sections: constants, calendar helpers, startOrrery (state, moon catalogue, scene
+ * setup, bodies, orbits, moon systems, precision mode, camera, UI, frame loop).
  */
 (function () {
   'use strict';
@@ -61,24 +63,29 @@
   };
   const TRUE_SIZE_EARTH = 0.06;
 
-  // Obliquity relative to the ecliptic, degrees (for the planets this equals the
-  // obliquity to their own orbit to within their small inclinations; the Moon's
-  // value is its obliquity to the ecliptic per Cassini's laws, not the 6.7 degrees
-  // it is tilted to its own orbit). Applied as a rotation about the scene X axis,
-  // which is only an approximation of the true pole direction (exact for no body
-  // but a reasonable one for Earth, whose pole projects toward ecliptic longitude 90).
+  // Obliquity relative to the ecliptic, degrees. Fallback only: with moons.js loaded
+  // the Sun and the planets are oriented to their IAU pole directions instead (see
+  // orientBody). The Moon's value is its obliquity to the ecliptic per Cassini's laws
+  // and is always applied as a rotation about the scene X axis.
   const AXIAL_TILT_DEG = {
     sun: 7.25, mercury: 0.03, venus: 177.4, earth: 23.44, mars: 25.19, jupiter: 3.13,
     saturn: 26.73, uranus: 97.77, neptune: 28.32, pluto: 122.5, moon: 1.54
   };
-  // Sidereal rotation periods in days. The sign convention of the source table marks
-  // retrograde rotators negative; because Venus, Uranus and Pluto already carry an
-  // obliquity above 90 degrees, spinning positively about the tilted axis reproduces
-  // their retrograde motion, so the absolute value is used.
+  // Sidereal rotation periods in days; negative marks the bodies that turn clockwise
+  // seen from ecliptic north (Venus, Uranus, Pluto). The magnitude sets the spin rate
+  // and orientBody resolves the sense against the pole direction it applied, so the
+  // same table serves the IAU poles and the fallback tilt (whose obliquities above
+  // 90 degrees reproduce the retrograde rotators with a positive spin). Planet moons
+  // are added at start-up with their orbital period, i.e. synchronous rotation.
   const ROTATION_PERIOD_DAYS = {
     sun: 25.38, mercury: 58.646, venus: -243.02, earth: 0.99727, mars: 1.02596, jupiter: 0.41354,
     saturn: 0.44401, uranus: -0.71833, neptune: 0.67125, pluto: -6.3872, moon: 27.32
   };
+
+  // A planet's moon system fades in as the planet's apparent radius on screen grows
+  // from MOON_GATE_LO_PX to MOON_GATE_HI_PX (labels join at the halfway point).
+  const MOON_GATE_LO_PX = 18;
+  const MOON_GATE_HI_PX = 36;
 
   const MAJOR_BODIES = new Set(['sun', 'venus', 'earth', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune']);
 
@@ -89,7 +96,8 @@
     jupiter: { color: 0xe3ceb0, power: 4.5, intensity: 0.28 },
     saturn: { color: 0xf1e2bc, power: 4.5, intensity: 0.24 },
     uranus: { color: 0xa8ecf5, power: 3.6, intensity: 0.5 },
-    neptune: { color: 0x7090ff, power: 3.6, intensity: 0.55 }
+    neptune: { color: 0x7090ff, power: 3.6, intensity: 0.55 },
+    titan: { color: 0xe6b264, power: 3.6, intensity: 0.45 }
   };
   const RINGS = {
     saturn: { inner: 1.35, outer: 2.3 },
@@ -98,8 +106,14 @@
 
   const DEFAULT_COLOR = {
     sun: 0xffc46b, mercury: 0x9a9a9a, venus: 0xe8c48a, earth: 0x5c9cff, moon: 0xc9c9c9, mars: 0xe0713c,
-    jupiter: 0xd9b48c, saturn: 0xe6d3a2, uranus: 0x9fe0ea, neptune: 0x5f7fff, pluto: 0xc8b7a6
+    jupiter: 0xd9b48c, saturn: 0xe6d3a2, uranus: 0x9fe0ea, neptune: 0x5f7fff, pluto: 0xc8b7a6,
+    // Planet moons, used only when OrreryVisuals.PLANET_STYLE has no entry for them.
+    phobos: 0x9a8f85, deimos: 0xa89d92, io: 0xe0b040, europa: 0xd9d2c4, ganymede: 0xa89a88, callisto: 0x8c8378,
+    mimas: 0xbdbdbd, enceladus: 0xe8ecf0, tethys: 0xd0d0d0, dione: 0xc4c4c2, rhea: 0xbfbdb8, titan: 0xe0a050,
+    iapetus: 0xa0958a, miranda: 0xb5b5b5, ariel: 0xc2c2c0, umbriel: 0x8a8a88, titania: 0xb0aaa4, oberon: 0xa09a94,
+    triton: 0xe0b8b0, charon: 0x9a8f86
   };
+  const FALLBACK_COLOR = 0xb0aca6;
 
   const ZODIAC = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -111,6 +125,12 @@
   const NEAR_FRACTION = 0.004;       // near plane = orbit distance * this, clamped below
   const NEAR_MIN = 0.005;
   const NEAR_MAX = 2;
+  // While a body with radius below NEAR_MIN / NEAR_RADIUS_FRACTION is followed (true-size
+  // Phobos is 1e-4 units in radius; Iapetus and everything larger still clear NEAR_MIN),
+  // the floor drops to this fraction of its radius: the camera then sits at the usual
+  // 2.5-6 radii with the near surface 2x-6.7x beyond the near plane. The cost is far-depth
+  // precision while such a body is followed, which only affects distant few-pixel discs.
+  const NEAR_RADIUS_FRACTION = 0.75;
   const STAR_RADIUS = 6000;
   const SKY_RADIUS = 6500;
 
@@ -167,6 +187,12 @@
     return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
   }
 
+  // 0 at or below a, 1 at or above b, a smooth ramp between.
+  function smoothstep01(a, b, x) {
+    const t = clamp((x - a) / (b - a), 0, 1);
+    return t * t * (3 - 2 * t);
+  }
+
   function hexColor(value) {
     return '#' + ('000000' + (value >>> 0).toString(16)).slice(-6);
   }
@@ -199,10 +225,66 @@
 
     const Eph = window.Ephemeris;
     const Vis = window.OrreryVisuals || null;
+    const Moons = window.Moons || null;
     if (!Eph) throw new Error('window.Ephemeris is not available');
 
     const JD_MIN = Eph.range.jdMin;
     const JD_MAX = Eph.range.jdMax;
+
+    // ---- Moon catalogue ---------------------------------------------------------
+    //
+    // Everything about the major moons of the other planets comes from moons.js. The
+    // catalogue is read once here so the tables above (display names, radii, rotation
+    // periods) are extended before any body is built; the scene objects themselves
+    // are created in buildMoonSystem / buildMoon during boot.
+
+    const moonData = {};     // moon name -> { parent, displayName, radiusKm, periodDays, retrograde, parentRadiusKm }
+    const moonOrder = [];    // [{ planet, names }] in Moons.SYSTEMS order, planets only
+
+    function loadMoonCatalogue() {
+      if (!Moons || !Moons.SYSTEMS || !Moons.DATA) return;
+      if (typeof Moons.position !== 'function' || typeof Moons.orbitPoints !== 'function') {
+        console.warn('window.Moons lacks position/orbitPoints; planet moons disabled');
+        return;
+      }
+      for (const planet of PLANETS) {
+        const names = Moons.SYSTEMS[planet];
+        if (!Array.isArray(names) || names.length === 0) continue;
+        const list = [];
+        for (const name of names) {
+          const d = Moons.DATA[name];
+          if (!d || !(d.radiusKm > 0) || !(Math.abs(d.periodDays) > 0)) {
+            console.warn('Moons.DATA is incomplete for ' + name + '; skipped');
+            continue;
+          }
+          if (d.parent && d.parent !== planet) {
+            console.warn('Moons.DATA[' + name + '].parent is ' + d.parent + ' but it is listed under ' + planet + '; skipped');
+            continue;
+          }
+          if (SCENE_BODIES.indexOf(name) !== -1 || moonData[name]) {
+            console.warn('Moon name ' + name + ' clashes with an existing body; skipped');
+            continue;
+          }
+          const parentRadiusKm = (Moons.PLANET_RADIUS_KM && Moons.PLANET_RADIUS_KM[planet] > 0)
+            ? Moons.PLANET_RADIUS_KM[planet] : REAL_RADIUS_KM[planet];
+          moonData[name] = {
+            parent: planet,
+            displayName: d.displayName || (name.charAt(0).toUpperCase() + name.slice(1)),
+            radiusKm: d.radiusKm,
+            periodDays: Math.abs(d.periodDays),
+            retrograde: !!d.retrograde,
+            parentRadiusKm
+          };
+          DISPLAY_NAME[name] = moonData[name].displayName;
+          REAL_RADIUS_KM[name] = d.radiusKm;
+          ROTATION_PERIOD_DAYS[name] = moonData[name].periodDays;   // tidally locked: one turn per orbit
+          list.push(name);
+        }
+        if (list.length) moonOrder.push({ planet, names: list });
+      }
+    }
+    loadMoonCatalogue();
+    const MOON_NAMES = moonOrder.reduce((acc, s) => acc.concat(s.names), []);
 
     // ---- DOM -----------------------------------------------------------------
 
@@ -260,6 +342,7 @@
       optTrueSize: $('opt-truesize'),
       optPluto: $('opt-pluto'),
       optMoon: $('opt-moon'),
+      optPlanetMoons: $('opt-planet-moons'),
       presetInner: $('preset-inner'),
       presetFull: $('preset-full'),
       presetTop: $('preset-top'),
@@ -285,6 +368,7 @@
       showMilkyWay: true,
       showPluto: true,
       showMoon: true,
+      showPlanetMoons: true,
       focus: null,             // body name being followed, or null for the Sun
       hover: null,             // body name under the pointer
       lastJdChangeAt: 0,       // performance.now() of the last jd change
@@ -324,6 +408,15 @@
     }
 
     function bodyRadius(name) {
+      const md = moonData[name];
+      if (md) {
+        // Planet moons scale with their parent's drawn radius: the true ratio in
+        // true-size mode, otherwise three times it, clamped so the smallest stay
+        // visible and clickable and Charon does not rival Pluto.
+        const ratio = md.radiusKm / md.parentRadiusKm;
+        const rParent = bodyRadius(md.parent);
+        return state.trueSize ? rParent * ratio : rParent * clamp(3 * ratio, 0.06, 0.5);
+      }
       if (state.trueSize) return TRUE_SIZE_EARTH * REAL_RADIUS_KM[name] / REAL_RADIUS_KM.earth;
       return VISUAL_RADIUS[name];
     }
@@ -331,7 +424,8 @@
     function accentOf(name) {
       const style = Vis && Vis.PLANET_STYLE && Vis.PLANET_STYLE[name];
       if (style && typeof style.color === 'number') return style.color;
-      return DEFAULT_COLOR[name];
+      if (typeof DEFAULT_COLOR[name] === 'number') return DEFAULT_COLOR[name];
+      return FALLBACK_COLOR;
     }
 
     // ---- Renderer, scene, camera ------------------------------------------------
@@ -382,7 +476,9 @@
     // the planet body at every zoom.
     function updateNearPlane() {
       const d = camera.position.distanceTo(controls.target);
-      const near = clamp(d * NEAR_FRACTION, NEAR_MIN, NEAR_MAX);
+      const followed = state.focus ? bodies[state.focus] : null;
+      const floor = (followed && followed.radius > 0) ? Math.min(NEAR_MIN, followed.radius * NEAR_RADIUS_FRACTION) : NEAR_MIN;
+      const near = clamp(d * NEAR_FRACTION, floor, NEAR_MAX);
       if (Math.abs(near - camera.near) > camera.near * 0.01) {
         camera.near = near;
         camera.far = CAMERA_FAR;
@@ -586,7 +682,61 @@
       return mesh;
     }
 
-    function buildBody(name, tex) {
+    const UP = new THREE.Vector3(0, 1, 0);
+    const poleTmp = new THREE.Vector3();
+
+    // IAU north pole of a body as a unit vector in scene coordinates, or null when
+    // moons.js is absent or has no pole for it.
+    function poleSceneOf(name, out) {
+      if (!Moons || typeof Moons.poleEcliptic !== 'function') return null;
+      if (Moons.POLES && !Moons.POLES[name]) return null;
+      let p = null;
+      try { p = Moons.poleEcliptic(name); } catch (err) { p = null; }
+      if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return null;
+      out.set(p.x, p.z, -p.y);
+      if (out.lengthSq() < 1e-12) return null;
+      return out.normalize();
+    }
+
+    // Orients a body's tilt group and returns the sign of its spin about that group's
+    // +Y axis. With moons.js, +Y is rotated onto the body's IAU pole; a planet moon
+    // takes its parent's pole, reversed for a retrograde orbit, since the major moons
+    // are tidally locked with their spin axis along the orbit normal. A pole table may
+    // give the north pole or the right-hand pole, so the sense is settled against the
+    // ecliptic: the rotation table marks the bodies that turn clockwise seen from
+    // ecliptic north, which is a negative spin about a north-pointing pole and a
+    // positive one about a south-pointing pole. Without moons.js the rotation about
+    // the scene X axis is kept, and a positive spin is right for every body there.
+    function orientBody(tilt, name, moonOf) {
+      if (moonOf) {
+        const parentRec = bodies[moonOf];
+        const md = moonData[name];
+        const pole = poleSceneOf(moonOf, poleTmp);
+        if (pole && parentRec) {
+          if (md && md.retrograde) pole.negate();
+          tilt.quaternion.setFromUnitVectors(UP, pole);
+          return parentRec.spinSign;
+        }
+        tilt.rotation.x = -(AXIAL_TILT_DEG[moonOf] || 0) * DEG;
+        return 1;
+      }
+      if (name !== 'moon') {
+        const pole = poleSceneOf(name, poleTmp);
+        if (pole) {
+          tilt.quaternion.setFromUnitVectors(UP, pole);
+          const clockwise = (ROTATION_PERIOD_DAYS[name] || 0) < 0;
+          return (clockwise ? -1 : 1) * (pole.y >= 0 ? 1 : -1);
+        }
+      }
+      tilt.rotation.x = -(AXIAL_TILT_DEG[name] || 0) * DEG;
+      return 1;
+    }
+
+    // opts.moonOf names the parent planet of a planet moon and opts.container the
+    // Object3D the body's group is added to (the scene by default).
+    function buildBody(name, tex, opts) {
+      const o = opts || {};
+      const moonOf = o.moonOf || null;
       const accent = accentOf(name);
       const radius = bodyRadius(name);
       const segments = MAJOR_BODIES.has(name) ? [96, 64] : [48, 32];
@@ -594,7 +744,7 @@
       const group = new THREE.Group();
       group.name = name;
       const tilt = new THREE.Group();
-      tilt.rotation.x = -AXIAL_TILT_DEG[name] * DEG;
+      const spinSign = orientBody(tilt, name, moonOf);
       tilt.scale.setScalar(radius);
       const spin = new THREE.Group();
 
@@ -608,9 +758,11 @@
       group.add(tilt);
 
       const record = {
-        name, group, tilt, spin, mesh, material, accent, radius,
+        name, group, tilt, spin, mesh, material, accent, radius, spinSign,
+        isMoon: !!moonOf, parent: moonOf, parentRadiusKm: moonOf ? moonData[name].parentRadiusKm : 0,
+        system: null, orbit: null, labelOn: true,
         clouds: null, atmosphere: null, rings: null, pick: null, marker: null,
-        label: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false }
+        label: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false, inView: false }
       };
 
       if (name === 'earth' && tex && tex.cloudsMap) {
@@ -664,7 +816,7 @@
       group.add(marker);
       record.marker = marker;
 
-      scene.add(group);
+      (o.container || scene).add(group);
       bodies[name] = record;
       bodyList.push(record);
       return record;
@@ -675,7 +827,7 @@
       const group = new THREE.Group();
       group.name = 'sun';
       const tilt = new THREE.Group();
-      tilt.rotation.x = -AXIAL_TILT_DEG.sun * DEG;
+      const spinSign = orientBody(tilt, 'sun', null);
       tilt.scale.setScalar(radius);
       const spin = new THREE.Group();
 
@@ -720,9 +872,10 @@
       sun.coronaMaterial = coronaMat;
 
       const record = {
-        name: 'sun', group, tilt, spin, mesh, material, accent: accentOf('sun'), radius,
+        name: 'sun', group, tilt, spin, mesh, material, accent: accentOf('sun'), radius, spinSign,
+        isMoon: false, parent: null, parentRadiusKm: 0, system: null, orbit: null, labelOn: true,
         clouds: null, atmosphere: null, rings: null, pick, marker: null,
-        label: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false }
+        label: null, visible: true, screen: { x: 0, y: 0, r: 0, visible: false, inView: false }
       };
       bodies.sun = record;
       bodyList.push(record);
@@ -750,10 +903,17 @@
       if (moonRec) { moonRec.visible = state.showMoon; moonRec.group.visible = state.showMoon; }
       if (orbits.pluto) orbits.pluto.line.visible = state.showOrbits && state.showPluto;
       for (const rec of bodyList) {
+        if (rec.isMoon) continue;   // gated per frame in updateMoonSystems
         if (rec.marker) rec.marker.visible = state.trueSize && rec.visible;
         if (rec.label) rec.label.classList.toggle('hidden', !rec.visible);
       }
-      if (state.focus && bodies[state.focus] && !bodies[state.focus].visible) setFocus(null);
+      for (const sys of moonSystems) {
+        sys.enabled = state.showPlanetMoons && sys.parent.visible && !sys.broken;
+        if (!sys.enabled) hideMoonSystem(sys);
+        for (const m of sys.moons) if (m.label) m.label.classList.toggle('hidden', !sys.enabled);
+      }
+      const followed = state.focus ? bodies[state.focus] : null;
+      if (followed && !(followed.isMoon ? followed.system.enabled : followed.visible)) setFocus(null);
     }
 
     // ---- Orbits ---------------------------------------------------------------------
@@ -868,6 +1028,168 @@
         const o = orbits[name];
         if (!o) continue;
         o.line.visible = state.showOrbits && (name !== 'pluto' || state.showPluto);
+      }
+    }
+
+    // ---- Moon systems -------------------------------------------------------------------
+    //
+    // The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto live in a
+    // "system" group under their planet's unrotated group, so their positions and
+    // orbit lines are parent-centric and travel with the planet. Like Earth's Moon
+    // they are placed relative to the parent's drawn radius rather than the AU scale.
+    // A system fades in as the parent's apparent radius crosses the MOON_GATE range;
+    // below it the meshes, orbit lines and labels are all hidden and nothing but the
+    // (cheap) positions is updated.
+
+    const moonSystems = [];             // [{ planet, parent, group, moons, t, enabled, broken }]
+    const moonLocal = new THREE.Vector3();
+    const moonPosOut = { x: 0, y: 0, z: 0, r: 0 };   // reused by Moons.position each frame
+
+    // Scene distance of a planet moon from its parent's centre for a parent-centric
+    // distance in km: the true ratio to the parent's radius in true-size mode,
+    // otherwise a compressed mapping that keeps the innermost moons clear of the
+    // globe (and of Saturn's rings) while the outermost stay within reach.
+    function moonSceneDistanceFor(rec, rKm) {
+      const rParent = bodyRadius(rec.parent);
+      const ratio = rKm / rec.parentRadiusKm;
+      if (state.trueSize) return rParent * ratio;
+      return rParent * (1.3 + 0.9 * Math.sqrt(ratio));
+    }
+
+    function buildMoonSystem(planet) {
+      const parent = bodies[planet];
+      if (!parent) return null;
+      const group = new THREE.Group();
+      group.name = planet + '-system';
+      group.visible = false;
+      parent.group.add(group);
+      const sys = { planet, parent, group, moons: [], t: 0, enabled: true, broken: false };
+      moonSystems.push(sys);
+      return sys;
+    }
+
+    function buildMoonOrbitLine(rec, sys) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MOON_ORBIT_SAMPLES * 3), 3));
+      const material = new THREE.LineBasicMaterial({ color: rec.accent, transparent: true, opacity: 0, depthWrite: false });
+      const line = new THREE.LineLoop(geometry, material);
+      line.name = rec.name + '-orbit';
+      line.frustumCulled = false;
+      line.visible = false;
+      sys.group.add(line);
+      rec.orbit = { line, geometry, material, jdSampled: NaN, period: moonData[rec.name].periodDays, failed: false };
+    }
+
+    function buildMoon(sys, name, tex) {
+      const rec = buildBody(name, tex, { moonOf: sys.planet, container: sys.group });
+      rec.system = sys;
+      rec.visible = false;
+      rec.labelOn = false;
+      buildMoonOrbitLine(rec, sys);
+      sys.moons.push(rec);
+      return rec;
+    }
+
+    // Locus of where the app places the moon over one orbit, with the same radial
+    // mapping as the moon itself, in the parent's local frame.
+    function sampleMoonSystemOrbit(rec, jd) {
+      const o = rec.orbit;
+      let pts = null;
+      try {
+        pts = Moons.orbitPoints(rec.name, jd, MOON_ORBIT_SAMPLES);
+      } catch (err) {
+        console.warn('Moons.orbitPoints(' + rec.name + ') failed', err);
+        pts = null;
+      }
+      o.jdSampled = jd;   // on failure this also spaces the retries a quarter period apart
+      if (!pts || !pts.length) { o.failed = true; return; }
+      const pos = o.geometry.attributes.position;
+      const n = Math.min(pos.count, pts.length);
+      for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        moonLocal.set(p.x, p.z, -p.y);
+        const len = moonLocal.length();
+        if (len > 0) moonLocal.multiplyScalar(moonSceneDistanceFor(rec, len * AU_KM) / len);
+        pos.setXYZ(i, moonLocal.x, moonLocal.y, moonLocal.z);
+      }
+      o.geometry.setDrawRange(0, n);
+      pos.needsUpdate = true;
+      o.failed = false;
+    }
+
+    // Marks every planet-moon orbit stale; visible ones are resampled on the next frame.
+    function invalidateMoonOrbits() {
+      for (const sys of moonSystems) for (const m of sys.moons) if (m.orbit) m.orbit.jdSampled = NaN;
+    }
+
+    function hideMoonSystem(sys) {
+      sys.t = 0;
+      sys.group.visible = false;
+      for (const m of sys.moons) {
+        m.visible = false;
+        m.screen.visible = false;
+        m.labelOn = false;
+        if (m.marker) m.marker.visible = false;
+        if (m.orbit) m.orbit.line.visible = false;
+      }
+    }
+
+    // Parent-centric placement of every planet moon; called from updateBodies once the
+    // planets have moved. Positions are kept current even while a system is hidden so
+    // a followed moon never jumps when its system fades back in.
+    function updateMoonPositions(jd) {
+      for (const sys of moonSystems) {
+        if (sys.broken) continue;
+        try {
+          for (const m of sys.moons) {
+            // moons.js fills the optional out object; an implementation that ignores
+            // it simply returns a fresh one, which is used the same way.
+            const p = Moons.position(m.name, jd, moonPosOut) || moonPosOut;
+            moonLocal.set(p.x, p.z, -p.y);
+            const len = moonLocal.length();
+            if (len > 0) moonLocal.multiplyScalar(moonSceneDistanceFor(m, len * AU_KM) / len);
+            m.group.position.copy(moonLocal);
+            m.spin.rotation.y = spinAngle(m.name, jd) * m.spinSign;
+          }
+        } catch (err) {
+          sys.broken = true;
+          sys.enabled = false;
+          console.warn('Moons.position failed for the ' + DISPLAY_NAME[sys.planet] + ' system; hiding it', err);
+          hideMoonSystem(sys);
+        }
+      }
+    }
+
+    // Zoom gate, run after updateScreenPositions so the parent's apparent radius is
+    // current: meshes above t = 0.02, orbit lines fading with t, labels above t = 0.5.
+    // The system holding the followed moon is always fully revealed: from true-size
+    // Iapetus, Saturn subtends under 18 px, which would otherwise hide the followed body.
+    function updateMoonSystems() {
+      const followed = state.focus ? bodies[state.focus] : null;
+      const followedSys = followed && followed.isMoon ? followed.system : null;
+      for (const sys of moonSystems) {
+        if (!sys.enabled) continue;   // hidden by applyBodyVisibility
+        const t = sys === followedSys ? 1 : smoothstep01(MOON_GATE_LO_PX, MOON_GATE_HI_PX, sys.parent.screen.r);
+        if (t <= 0.02) {
+          if (sys.group.visible) hideMoonSystem(sys);
+          continue;
+        }
+        sys.t = t;
+        sys.group.visible = true;
+        const labelsOn = t > 0.5;
+        const orbitsOn = state.showOrbits;
+        const orbitOpacity = 0.4 * t;
+        for (const m of sys.moons) {
+          m.visible = true;
+          m.screen.visible = m.screen.inView;
+          m.labelOn = labelsOn;
+          if (m.marker) m.marker.visible = state.trueSize;
+          const o = m.orbit;
+          if (!o) continue;
+          if (orbitsOn && !(Math.abs(state.jd - o.jdSampled) <= o.period / 4)) sampleMoonSystemOrbit(m, state.jd);
+          o.material.opacity = orbitOpacity;
+          o.line.visible = orbitsOn && !o.failed;
+        }
       }
     }
 
@@ -1240,7 +1562,7 @@
       labelViewport.w = 0; labelViewport.h = 0;
       for (const rec of bodyList) {
         const el = document.createElement('div');
-        el.className = 'label';
+        el.className = rec.isMoon ? 'label minor' : 'label';
         el.style.setProperty('--label-color', hexColor(rec.accent));
         el.textContent = DISPLAY_NAME[rec.name];
         el.style.display = 'none';
@@ -1279,7 +1601,8 @@
         const dist = worldV.distanceTo(camera.position);
         projV.copy(worldV).project(camera);
         const s = rec.screen;
-        s.visible = rec.visible && projV.z < 1 && projV.z > -1 && Math.abs(projV.x) < 1.6 && Math.abs(projV.y) < 1.6;
+        s.inView = projV.z < 1 && projV.z > -1 && Math.abs(projV.x) < 1.6 && Math.abs(projV.y) < 1.6;
+        s.visible = rec.visible && s.inView;
         s.x = (projV.x * 0.5 + 0.5) * w;
         s.y = (-projV.y * 0.5 + 0.5) * h;
         s.r = dist > 0 ? (rec.radius / (dist * tanHalf)) * (h * 0.5) : 0;
@@ -1340,13 +1663,16 @@
       labelOrder.length = 0;
       for (const rec of bodyList) {
         if (!rec.label) continue;
-        if (!rec.screen.visible) { hideLabel(rec); continue; }
+        if (!rec.screen.visible || !rec.labelOn) { hideLabel(rec); continue; }
         if (rec.labelBox.w === 0) measureLabels();
         labelOrder.push(rec);
       }
+      // The followed body first, then the planets by apparent size, then the planet
+      // moons, so a planet's label always wins over those of its moons.
       labelOrder.sort((a, b) => {
         if (a.name === state.focus) return -1;
         if (b.name === state.focus) return 1;
+        if (a.isMoon !== b.isMoon) return a.isMoon ? 1 : -1;
         return b.screen.r - a.screen.r;
       });
       placedRects.length = 0;
@@ -1803,10 +2129,14 @@
         state.trueSize = dom.optTrueSize.checked;
         applyRadii();
         updateMoonOrbit(true);
+        invalidateMoonOrbits();
         if (state.focus) setFocus(state.focus);
       });
       dom.optPluto.addEventListener('change', () => { state.showPluto = dom.optPluto.checked; applyBodyVisibility(); applyOrbitVisibility(); });
       dom.optMoon.addEventListener('change', () => { state.showMoon = dom.optMoon.checked; applyBodyVisibility(); });
+      if (dom.optPlanetMoons) {
+        dom.optPlanetMoons.addEventListener('change', () => { state.showPlanetMoons = dom.optPlanetMoons.checked; applyBodyVisibility(); });
+      }
       dom.presetInner.addEventListener('click', () => applyPreset('inner'));
       dom.presetFull.addEventListener('click', () => applyPreset('full'));
       dom.presetTop.addEventListener('click', () => applyPreset('top'));
@@ -1831,6 +2161,10 @@
       dom.optTrueSize.checked = state.trueSize;
       dom.optPluto.checked = state.showPluto;
       dom.optMoon.checked = state.showMoon;
+      if (dom.optPlanetMoons) {
+        dom.optPlanetMoons.checked = state.showPlanetMoons;
+        dom.optPlanetMoons.disabled = moonOrder.length === 0;   // moons.js missing or empty
+      }
       if (window.innerWidth < 760) setInfoPanel(false); else setInfoPanel(true);
     }
 
@@ -1841,6 +2175,7 @@
     const MOON_MEAN_DISTANCE_EARTH_RADII = 60.3;
     const CLOUD_PERIOD_DAYS = ROTATION_PERIOD_DAYS.earth / 1.03;   // clouds drift slightly faster than the ground
 
+    // Unsigned spin phase; callers multiply by the record's spinSign (see orientBody).
     function spinAngle(name, jd) {
       const period = Math.abs(ROTATION_PERIOD_DAYS[name]);
       const turns = (jd - J2000) / period;
@@ -1870,9 +2205,10 @@
         const p = b[name];
         if (!rec || !p) continue;
         toScene(p, rec.group.position);
-        rec.spin.rotation.y = spinAngle(name, jd);
+        rec.spin.rotation.y = spinAngle(name, jd) * rec.spinSign;
         if (rec.clouds) rec.clouds.rotation.y = cloudAngle(jd);
       }
+      updateMoonPositions(jd);
       if (bodies.earth) {
         // Direction from Earth to the Sun (at the origin), in view space for the shader.
         earthSunDir.value.copy(bodies.earth.group.position).negate();
@@ -1888,9 +2224,9 @@
         const len = moonDir.length();
         if (len > 0) moonDir.multiplyScalar(moonSceneDistance() / len);
         moonRec.group.position.copy(earthScene).add(moonDir);
-        moonRec.spin.rotation.y = spinAngle('moon', jd);
+        moonRec.spin.rotation.y = spinAngle('moon', jd) * moonRec.spinSign;
       }
-      if (bodies.sun) bodies.sun.spin.rotation.y = spinAngle('sun', jd);
+      if (bodies.sun) bodies.sun.spin.rotation.y = spinAngle('sun', jd) * bodies.sun.spinSign;
     }
 
     function updateSun(elapsedSeconds) {
@@ -1929,6 +2265,7 @@
       updateNearPlane();
 
       updateScreenPositions();
+      updateMoonSystems();
       updateMoonOrbitVisibility();
       updateLabels();
 
@@ -1960,7 +2297,7 @@
     }
 
     async function boot() {
-      const steps = SCENE_BODIES.length + 3;
+      const steps = SCENE_BODIES.length + MOON_NAMES.length + 3;
       let done = 0;
       setProgress(0, 'Initialising renderer');
       await nextTick();
@@ -1990,6 +2327,23 @@
           try { if (name === 'sun') buildSun(null); else buildBody(name, null); } catch (err2) { console.error('Could not build ' + name, err2); }
         }
         done++;
+      }
+
+      // Planet moons go after their parents so each system group has a planet to hang from.
+      for (const entry of moonOrder) {
+        const sys = buildMoonSystem(entry.planet);
+        if (!sys) { done += entry.names.length; continue; }
+        for (const name of entry.names) {
+          setProgress(done / steps, 'Painting ' + DISPLAY_NAME[name] + '...');
+          await nextTick();
+          try {
+            buildMoon(sys, name, safeTextures(name));
+          } catch (err) {
+            console.warn('Failed to build ' + name + ' with textures; retrying with flat color', err);
+            try { if (!bodies[name]) buildMoon(sys, name, null); } catch (err2) { console.error('Could not build ' + name, err2); }
+          }
+          done++;
+        }
       }
 
       setProgress(done / steps, 'Tracing orbits');
