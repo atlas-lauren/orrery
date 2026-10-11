@@ -25,7 +25,11 @@
  * equinox, z toward ecliptic north. Longitudes in [0, 360) degrees.
  *
  * Time: every public function takes a Julian Date in UT (a JS number). The
- * Keplerian elements are evaluated at TT = UT + deltaT(UT).
+ * Keplerian elements are evaluated at TT = UT + deltaT(UT). meanLongitude()
+ * exposes the mean longitude L the selected element set moves the planet with,
+ * in [0, 360); meanLongitudeUnwrapped() is the same angle without the wrap, a
+ * continuous function of time (used by the belt shaders for mean-motion
+ * resonances with Jupiter and Neptune, whose p:q branch formula divides L by p).
  *
  * 'earth' is the true Earth, not the Earth-Moon barycenter: the JPL element
  * set describes the EMB, so Earth = EMB - moonGeocentric / (1 + 81.30056),
@@ -384,6 +388,43 @@
     var moon = moonGeocentric(jdUT);
     var f = 1 / (1 + EARTH_MOON_MASS_RATIO);
     return spherical(emb.x - f * moon.x, emb.y - f * moon.y, emb.z - f * moon.z);
+  }
+
+  // Mean longitude L of a JPL element set body, unwrapped: a continuous
+  // function of time in degrees (Jupiter runs from about -152000 at 3000 BC to
+  // +152000 at 3000 AD), from the L0 + Ldot * T row of the same table
+  // heliocentric() selects for the date, with T in TT Julian centuries from
+  // J2000. It is the L the drawn planet actually moves with: in the 3000 BC -
+  // 3000 AD set keplerian() adds the Table 2b terms to the mean anomaly, so
+  // they are added here too (without them the long set's L is up to 0.7 deg
+  // off the planet and off the 1800 - 2050 set). L0 is wrapped before the rate
+  // term so both tables sit on the same branch (Neptune's L0 is -55.12 in one
+  // table and 304.22 in the other); the remaining step at a table switch is
+  // below 0.07 deg. For 'earth' this is the Earth-Moon barycenter's mean
+  // longitude. Resonant belt particles are locked to this angle (3:2 plutinos
+  // and Hildas, 2:1 twotinos, 1:1 Trojans): their mean longitude is
+  // (q L + ...) / p, so they need the unwrapped L; a 360 deg wrap would move
+  // every one of them by q / p of a turn.
+  function meanLongitudeUnwrapped(body, jd) {
+    checkBody(body);
+    var jdUT = toNumber(jd, 'jd');
+    var T = (ttFromUt(jdUT) - J2000) / 36525;
+    var shortSet = usesShortSet(jdUT);
+    var row = (shortSet ? TABLE_1 : TABLE_2)[body];
+    if (!row) {
+      throw new RangeError('meanLongitude: no JPL element set for ' + body);
+    }
+    var L = wrap360(row[0][3]) + row[1][3] * T;
+    if (!shortSet && TABLE_2B[body]) {
+      var k = TABLE_2B[body];
+      L += k.b * T * T + k.c * Math.cos(k.f * T * DEG) + k.s * Math.sin(k.f * T * DEG);
+    }
+    return L;
+  }
+
+  // The same mean longitude wrapped to [0, 360) degrees.
+  function meanLongitude(body, jd) {
+    return wrap360(meanLongitudeUnwrapped(body, jd));
   }
 
   // ---------------------------------------------------------------------------
@@ -826,6 +867,8 @@
     civilFromJd: civilFromJd,
     deltaT: deltaT,
     heliocentric: heliocentric,
+    meanLongitude: meanLongitude,
+    meanLongitudeUnwrapped: meanLongitudeUnwrapped,
     moonGeocentric: moonGeocentric,
     all: all,
     orbitalPeriodDays: orbitalPeriodDays,

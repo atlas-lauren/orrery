@@ -195,7 +195,14 @@ Greenwich sidereal time with IAU 2006 precession, so the correct geography
 faces the Sun at every date (`scripts/verify_earth_orientation.py` checks the
 sub-solar point against Skyfield to 0.015 degrees). Every other texture, the
 Sun's surface, corona, atmospheres, starfield and Milky Way are generated
-procedurally at load.
+procedurally at load. The asteroid belt (main belt with its Kirkwood gaps,
+Hildas, Jupiter Trojans) and the Kuiper belt (cold and hot classical belt,
+plutinos, twotinos, scattered disk) are populations of real orbits propagated
+on the GPU: each particle carries orbital elements and the vertex shader
+solves Kepler's equation for the current date, with resonant populations
+locked to Neptune's and Jupiter's mean longitudes (`scripts/verify_belts.js`
+checks the orbit math against the planetary ephemeris and the resonance
+geometry).
 Distances are compressed by default (angular positions stay exact; only the
 radial distance is scaled) with true-scale distance and true-size toggles in
 the settings panel. Dates are shown in the proleptic Gregorian calendar with
@@ -221,7 +228,8 @@ orrery/            importable engine (no web dependency)
   astro.py         astronomical core (Part 1)
   web.py           FastAPI backend for the web orrery (Part 6)
 web/               the browser orrery (index.html, app.js, ephemeris.js, moons.js, visuals.js)
-scripts/           verify_ephemeris.py (planets vs Skyfield/DE441), verify_moons.py (moons vs Horizons)
+scripts/           verify_ephemeris.py (planets vs DE441), verify_moons.py (moons vs Horizons),
+                   verify_earth_orientation.py (sub-solar point vs Skyfield), verify_belts.js (belt orbits)
 tests/             pytest suite
 data/              downloaded ephemeris kernels (git-ignored)
 pyproject.toml

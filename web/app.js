@@ -13,6 +13,9 @@
  * pole and equinox of date, Greenwich sidereal time) when that function exists.
  * The Moon likewise swaps in NASA's LRO colour mosaic and LOLA relief (shipped in
  * textures/) and is turned with Ephemeris.moonOrientation (IAU rotation model).
+ * The asteroid and Kuiper belts are populations of real orbits propagated on the
+ * GPU (OrreryVisuals.orbitalBelt): the app only feeds them the time, the reference
+ * planet's mean longitude and the distance mapping each frame.
  *
  * Sections: constants, calendar helpers, startOrrery (state, moon catalogue, scene
  * setup, bodies, orbits, moon systems, precision mode, camera, UI, frame loop).
@@ -521,6 +524,10 @@
       if (sky.stars && sky.stars.material && sky.stars.material.uniforms && sky.stars.material.uniforms.uPixelRatio) {
         sky.stars.material.uniforms.uPixelRatio.value = renderer.getPixelRatio();
       }
+      for (let i = 0; i < orbitalBelts.length; i++) {
+        const u = orbitalBelts[i].uniforms;
+        if (u.uPixelRatio) u.uPixelRatio.value = renderer.getPixelRatio();
+      }
     }
     window.addEventListener('resize', onResize);
 
@@ -602,39 +609,178 @@
       if (sky.milkyWay) { sky.milkyWay.name = 'milkyway'; sky.milkyWay.frustumCulled = false; sky.milkyWay.visible = state.showMilkyWay; scene.add(sky.milkyWay); }
     }
 
-    function buildBelt() {
-      if (sky.belt) {
-        scene.remove(sky.belt);
-        if (sky.belt.geometry) sky.belt.geometry.dispose();
-        if (sky.belt.material) sky.belt.material.dispose();
-        sky.belt = null;
+    // ---- Belts -----------------------------------------------------------------
+    //
+    // Both belts are populations of real Keplerian orbits propagated in the vertex
+    // shader (OrreryVisuals.orbitalBelt). The geometry holds orbital elements and is
+    // built once; the material maps every particle into the scene from uDays (TT days
+    // since J2000), uRefLon (unwrapped mean longitude of the reference planet, which
+    // the resonant particles are locked to: plutinos and twotinos with Neptune, Hildas
+    // and Trojans with Jupiter) and the current distance mapping (uScale, uExponent). The
+    // true-scale toggle therefore only changes two uniforms. If orbitalBelt is missing
+    // or throws, the old static ring builders are used; those bake scene positions and
+    // are rebuilt on scale changes as before.
+
+    const BELT_SPECS = {
+      belt:   { kind: 'asteroid', count: 9000,  name: 'asteroid-belt', refBody: 'jupiter' },
+      kuiper: { kind: 'kuiper',   count: 14000, name: 'kuiper-belt',   refBody: 'neptune' }
+    };
+    const orbitalBelts = [];      // [{ points, uniforms, refBody, lastL, refLon }], rebuilt by refreshOrbitalBelts
+    const beltWarned = {};        // kind -> true once the static-fallback warning has been logged
+    // The shader's resonant branch formula divides the planet's mean longitude by p,
+    // so uRefLon has to be continuous in time: a 360 deg wrap would move every
+    // plutino, twotino and Hilda by q / p of a turn in one frame (only the 1:1 Trojans
+    // are immune). Ephemeris.meanLongitudeUnwrapped is that continuous angle; with
+    // only the [0, 360) meanLongitude available it is unwrapped across frames instead.
+    const hasUnwrappedLongitude = typeof Eph.meanLongitudeUnwrapped === 'function';
+    const hasMeanLongitude = hasUnwrappedLongitude || typeof Eph.meanLongitude === 'function';
+    let lastBeltJd = NaN;
+
+    function disposeSkyObject(key) {
+      const obj = sky[key];
+      if (!obj) return;
+      scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+      sky[key] = null;
+    }
+
+    // The ShaderMaterial uniforms of an orbital belt, or null for a static one.
+    function beltUniforms(points) {
+      const u = points && points.material && points.material.uniforms;
+      return u && u.uDays && u.uRefLon && u.uScale && u.uExponent ? u : null;
+    }
+
+    function isOrbitalBelt(points) {
+      return beltUniforms(points) !== null;
+    }
+
+    function warnBeltFallback(kind, message, err) {
+      if (beltWarned[kind]) return;
+      beltWarned[kind] = true;
+      if (err) console.warn(message, err); else console.warn(message);
+    }
+
+    function makeOrbitalBelt(spec) {
+      if (!Vis || typeof Vis.orbitalBelt !== 'function') {
+        warnBeltFallback(spec.kind, 'OrreryVisuals.orbitalBelt is not available; using the static ' + spec.kind + ' belt');
+        return null;
       }
-      const inner = mapDistance(2.2);
-      const outer = mapDistance(3.3);
-      sky.belt = visualsCall('asteroidBelt', [inner, outer, 4000], () => fallbackBelt(inner, outer, 4000));
-      if (sky.belt) {
-        sky.belt.name = 'asteroid-belt';
-        sky.belt.visible = state.showBelt;
-        scene.add(sky.belt);
+      let points = null;
+      try {
+        points = Vis.orbitalBelt({ kind: spec.kind, count: spec.count });
+        if (points && beltUniforms(points)) return points;
+        throw new Error('orbitalBelt(' + spec.kind + ') returned no Points with the belt uniforms');
+      } catch (err) {
+        if (points) {
+          if (points.geometry) points.geometry.dispose();
+          if (points.material) points.material.dispose();
+        }
+        warnBeltFallback(spec.kind, 'OrreryVisuals.orbitalBelt(' + spec.kind + ') failed; using the static belt', err);
+        return null;
       }
     }
 
-    // Kuiper belt, 30 to 50 AU, sampled in AU and mapped through the current
-    // distance mapping so it sits correctly in both compressed and true scale.
+    // Distance mapping and sprite scale for an orbital belt; no-op for a static one.
+    function applyBeltUniforms(points) {
+      const u = beltUniforms(points);
+      if (!u) return;
+      u.uScale.value = DISTANCE_SCALE;
+      u.uExponent.value = state.trueScale ? 1.0 : COMPRESSED_EXPONENT;
+      if (u.uPixelRatio) u.uPixelRatio.value = renderer.getPixelRatio();
+    }
+
+    function attachBelt(key, points) {
+      sky[key] = points;
+      if (!points) return;
+      const spec = BELT_SPECS[key];
+      points.name = spec.name;
+      points.visible = key === 'belt' ? state.showBelt : state.showKuiper;
+      points.frustumCulled = false;   // positions are computed in the vertex shader
+      applyBeltUniforms(points);
+      scene.add(points);
+    }
+
+    // Rebuild the per-frame list of orbital belts and push the current time into them.
+    function refreshOrbitalBelts() {
+      orbitalBelts.length = 0;
+      for (const key of ['belt', 'kuiper']) {
+        const points = sky[key];
+        const uniforms = beltUniforms(points);
+        if (!uniforms) continue;
+        const refBody = (points.userData && typeof points.userData.refBody === 'string') ? points.userData.refBody : BELT_SPECS[key].refBody;
+        orbitalBelts.push({ points: points, uniforms: uniforms, refBody: refBody, lastL: NaN, refLon: 0 });
+      }
+      if (orbitalBelts.length > 0 && !hasMeanLongitude) {
+        warnBeltFallback('meanLongitude', 'Ephemeris.meanLongitude is missing; resonant belt particles will not follow their planets');
+      }
+      lastBeltJd = NaN;
+      updateBelts(state.jd);
+    }
+
+    function buildBelt() {
+      disposeSkyObject('belt');
+      let points = makeOrbitalBelt(BELT_SPECS.belt);
+      if (!points) {
+        const inner = mapDistance(2.2);
+        const outer = mapDistance(3.3);
+        points = visualsCall('asteroidBelt', [inner, outer, 4000], () => fallbackBelt(inner, outer, 4000));
+      }
+      attachBelt('belt', points);
+      refreshOrbitalBelts();
+    }
+
     function buildKuiperBelt() {
-      if (sky.kuiper) {
-        scene.remove(sky.kuiper);
-        if (sky.kuiper.geometry) sky.kuiper.geometry.dispose();
-        if (sky.kuiper.material) sky.kuiper.material.dispose();
-        sky.kuiper = null;
+      disposeSkyObject('kuiper');
+      let points = makeOrbitalBelt(BELT_SPECS.kuiper);
+      if (!points) {
+        // Static ring, 30 to 50 AU, sampled in AU and mapped through the current
+        // distance mapping so it sits correctly in both compressed and true scale.
+        const mapRadius = (au) => mapDistance(au);
+        points = visualsCall('kuiperBelt', [30, 50, 9000, mapRadius], () => fallbackBelt(mapDistance(39), mapDistance(48), 6000));
       }
-      const mapRadius = (au) => mapDistance(au);
-      sky.kuiper = visualsCall('kuiperBelt', [30, 50, 9000, mapRadius], () => fallbackBelt(mapDistance(39), mapDistance(48), 6000));
-      if (sky.kuiper) {
-        sky.kuiper.name = 'kuiper-belt';
-        sky.kuiper.visible = state.showKuiper;
-        scene.add(sky.kuiper);
+      attachBelt('kuiper', points);
+      refreshOrbitalBelts();
+    }
+
+    // True-scale toggle: an orbital belt just takes the new mapping uniforms; a static
+    // fallback belt has its scene positions baked in and must be rebuilt.
+    function applyBeltScale() {
+      if (sky.belt && !isOrbitalBelt(sky.belt)) buildBelt(); else applyBeltUniforms(sky.belt);
+      if (sky.kuiper && !isOrbitalBelt(sky.kuiper)) buildKuiperBelt(); else applyBeltUniforms(sky.kuiper);
+    }
+
+    // Per frame: TT days since J2000 and the reference planet's mean longitude.
+    // Allocation-free; skipped while the clock stands still.
+    function updateBelts(jd) {
+      if (orbitalBelts.length === 0 || jd === lastBeltJd) return;
+      lastBeltJd = jd;
+      const days = jd + Eph.deltaT(jd) / 86400 - J2000;
+      for (let i = 0; i < orbitalBelts.length; i++) {
+        const entry = orbitalBelts[i];
+        entry.uniforms.uDays.value = days;
+        if (hasMeanLongitude) entry.uniforms.uRefLon.value = referenceLongitude(entry, jd);
       }
+    }
+
+    // Continuous mean longitude of a belt's reference planet, radians. The fallback
+    // unwraps the [0, 360) value from frame to frame: Jupiter moves at most 51 deg
+    // per 60 fps frame at the fastest clock rate, well under the 180 deg ambiguity;
+    // a larger date jump just lands on the nearest branch, which is harmless since
+    // every particle moves anyway.
+    function referenceLongitude(entry, jd) {
+      if (hasUnwrappedLongitude) return Eph.meanLongitudeUnwrapped(entry.refBody, jd) * DEG;
+      const L = Eph.meanLongitude(entry.refBody, jd) * DEG;
+      if (Number.isNaN(entry.lastL)) {
+        entry.lastL = L;
+        entry.refLon = L;
+        return L;
+      }
+      let d = L - entry.lastL;
+      if (d > Math.PI) d -= TWO_PI; else if (d < -Math.PI) d += TWO_PI;
+      entry.refLon += d;
+      entry.lastL = L;
+      return entry.refLon;
     }
 
     // ---- Bodies ------------------------------------------------------------------
@@ -2514,8 +2660,7 @@
       dom.optTrueScale.addEventListener('change', () => {
         state.trueScale = dom.optTrueScale.checked;
         updateOrbits(true);
-        buildBelt();
-        buildKuiperBelt();
+        applyBeltScale();
         if (!state.focus) applyPreset('default', 900);
       });
       dom.optTrueSize.addEventListener('change', () => {
@@ -2761,6 +2906,7 @@
       updateBodies(positions, state.jd);
       updateOrbits(false);
       updateSun(timeMs / 1000);
+      updateBelts(state.jd);
 
       updateCamera(now);
       controls.update();

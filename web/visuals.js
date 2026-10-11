@@ -1442,6 +1442,85 @@
     '}'
   ].join('\n');
 
+  /*
+   * Orbital belt particles. Every particle is a Keplerian orbit propagated here
+   * each frame; beltReference.positionOf() below is the line-by-line CPU twin
+   * (same solver start, same iteration count, same rotation order), so keep the
+   * two in step. Free orbit: M = M0 + n * days. Resonant orbit (p > 0): the
+   * resonant argument phi = p lambda - q lambdaRef - (p - q) varpi librates about
+   * phiCenter, which fixes lambda (and the mean motion (q / p) nRef) given the
+   * reference planet's mean longitude uRefLon.
+   */
+  var KEPLER_ITERATIONS = 7;
+
+  var BELT_VERT = [
+    'precision highp float;',
+    'attribute vec4 aOrbit;',
+    'attribute vec4 aOrbit2;',
+    'attribute vec4 aRes;',
+    'attribute vec3 aLib;',
+    'attribute vec3 color;',
+    'uniform float uDays;',
+    'uniform float uRefLon;',
+    'uniform float uScale;',
+    'uniform float uExponent;',
+    'uniform float uPixelRatio;',
+    'uniform float uSizeScale;',
+    'varying vec3 vColor;',
+    'const float PI = 3.141592653589793;',
+    'const float TAU = 6.283185307179586;',
+    'float wrapPi(float x) { return mod(x + PI, TAU) - PI; }',
+    'void main() {',
+    '  float a = aOrbit.x;',
+    '  float e = aOrbit.y;',
+    '  float inc = aOrbit.z;',
+    '  float Om = aOrbit.w;',
+    '  float w = aOrbit2.x;',
+    '  float varpi = Om + w;',
+    '  float M = aOrbit2.y + aOrbit2.z * uDays;',
+    '  if (aRes.x > 0.5) {',
+    '    float p = aRes.x;',
+    '    float q = aRes.y;',
+    '    float phi = aRes.z + aLib.x * sin(aLib.y + aLib.z * uDays);',
+    '    float lambda = (q * uRefLon + (p - q) * varpi + phi) / p + aRes.w * TAU / p;',
+    '    M = lambda - varpi;',
+    '  }',
+    '  M = wrapPi(M);',
+    '  float E = M + e * sin(M);',
+    '  for (int it = 0; it < ' + KEPLER_ITERATIONS + '; it++) {',
+    '    E = E - (E - e * sin(E) - M) / (1.0 - e * cos(E));',
+    '  }',
+    '  float xp = a * (cos(E) - e);',
+    '  float yp = a * sqrt(1.0 - e * e) * sin(E);',
+    '  float cw = cos(w);',
+    '  float sw = sin(w);',
+    '  float cO = cos(Om);',
+    '  float sO = sin(Om);',
+    '  float ci = cos(inc);',
+    '  float si = sin(inc);',
+    '  float x = (cw * cO - sw * sO * ci) * xp + (-sw * cO - cw * sO * ci) * yp;',
+    '  float y = (cw * sO + sw * cO * ci) * xp + (-sw * sO + cw * cO * ci) * yp;',
+    '  float z = (sw * si) * xp + (cw * si) * yp;',
+    '  float r = max(sqrt(x * x + y * y + z * z), 0.0001);',
+    '  vec3 scenePos = vec3(x, z, -y) * (uScale * pow(r, uExponent - 1.0)) + position;',
+    '  gl_Position = projectionMatrix * modelViewMatrix * vec4(scenePos, 1.0);',
+    '  gl_PointSize = aOrbit2.w * uSizeScale * uPixelRatio;',
+    '  vColor = color;',
+    '}'
+  ].join('\n');
+
+  var BELT_FRAG = [
+    'precision highp float;',
+    'uniform float uOpacity;',
+    'varying vec3 vColor;',
+    'void main() {',
+    '  float d = length(gl_PointCoord - vec2(0.5));',
+    '  float alpha = (1.0 - smoothstep(0.25, 0.5, d)) * uOpacity;',
+    '  if (alpha < 0.01) discard;',
+    '  gl_FragColor = vec4(vColor, alpha);',
+    '}'
+  ].join('\n');
+
   /* ------------------------------------------------------------------ */
   /* THREE wrappers                                                      */
   /* ------------------------------------------------------------------ */
@@ -1718,6 +1797,299 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* Orbital belts: populations of real orbits propagated on the GPU     */
+  /* ------------------------------------------------------------------ */
+
+  /*
+   * orbitalBelt({ kind: 'asteroid' | 'kuiper', count }) -> THREE.Points whose
+   * particles are Keplerian orbits (ecliptic J2000, AU, radians) propagated by the
+   * BELT_VERT shader every frame. Per-particle attributes:
+   *
+   *   aOrbit   = (a AU, e, i, Omega)
+   *   aOrbit2  = (omega, M0 at J2000, n rad/day, point size px)
+   *   aRes     = (p, q, phiCenter, k)   p = 0: free orbit; otherwise locked in the p:q
+   *                                     mean-motion resonance with the reference planet
+   *   aLib     = (amplitude, phase, rate rad/day)   libration of the resonant argument
+   *   color    = (r, g, b)              every channel < 1 so the bloom pass ignores it
+   *   position = (0, 0, 0)              three.js takes the draw count from it
+   *
+   * Resonant orbits: phi = p lambda - q lambdaRef - (p - q) varpi librates about
+   * phiCenter, phi = phiCenter + amplitude sin(phase + rate days), so
+   * lambda = (q lambdaRef + (p - q) varpi + phi) / p + 2 pi k / p, M = lambda - varpi
+   * and the mean motion (q / p) nRef follows automatically:
+   *   plutinos  p 3 q 2 about pi     perihelion passages 90 deg from Neptune
+   *   twotinos  p 2 q 1 about pi     perihelion passages opposite Neptune
+   *   Hildas    p 2 q 3 about 0      aphelia at L3, L4 and L5 (the Hilda triangle)
+   *   Trojans   p 1 q 1 about +-60   the L4 and L5 clouds
+   * (An interior 3:2 resonance needs p = 2, q = 3 in this form: the Hilda makes
+   * three orbits per two of Jupiter, so lambda = (3 lambdaJ - varpi + phi) / 2.)
+   *
+   * Uniforms: uDays (TT days since J2000), uRefLon (mean longitude of the reference
+   * planet, radians), uScale and uExponent (scene = (x, z, -y) uScale r^(uExponent - 1)),
+   * uPixelRatio, uOpacity, uSizeScale. points.userData = { kind, refBody, count }.
+   *
+   * beltReference exposes the generator and the CPU twin of the vertex shader so the
+   * orbit math can be tested in Node (scripts/verify_belts.js).
+   */
+
+  var D2R = Math.PI / 180;
+  var GOLDEN = 0.6180339887498949;
+
+  var BELT_DEFAULTS = {
+    asteroid: { count: 9000, opacity: 0.5, refBody: 'jupiter', seed: 90210 },
+    kuiper: { count: 14000, opacity: 0.45, refBody: 'neptune', seed: 48151 }
+  };
+
+  /* Kirkwood gaps: [centre AU, half width AU]; main-belt a is resampled when inside one. */
+  var KIRKWOOD_GAPS = [[2.065, 0.015], [2.502, 0.025], [2.825, 0.02], [2.958, 0.015], [3.279, 0.03]];
+
+  function uniform(rng, lo, hi) { return lo + (hi - lo) * rng(); }
+
+  /* Rayleigh(sigma), rejection-sampled into [lo, hi] (clamped if 64 draws all miss). */
+  function rayleigh(rng, sigma, lo, hi) {
+    var v, tries = 0;
+    do { v = sigma * Math.sqrt(-2 * Math.log(1 - rng())); } while ((v < lo || v > hi) && ++tries < 64);
+    return clamp(v, lo, hi);
+  }
+
+  function normal(rng, mu, sigma) {
+    return mu + sigma * Math.sqrt(-2 * Math.log(1 - rng())) * Math.cos(TAU * rng());
+  }
+
+  function inKirkwoodGap(a) {
+    var g;
+    for (g = 0; g < KIRKWOOD_GAPS.length; g++) {
+      if (Math.abs(a - KIRKWOOD_GAPS[g][0]) < KIRKWOOD_GAPS[g][1]) return true;
+    }
+    return false;
+  }
+
+  /* Samplers fill o = { a, e, i, p, q, phiCenter, k, amp (rad), period (years) }. */
+  function mainBelt(lo, hi) {
+    return function (rng, o) {
+      var tries = 0;
+      do { o.a = uniform(rng, lo, hi); } while (inKirkwoodGap(o.a) && ++tries < 64);
+      o.e = rayleigh(rng, 0.10, 0, 0.35);
+      o.i = rayleigh(rng, 7 * D2R, 0, 30 * D2R);
+    };
+  }
+
+  function trojan(centerDeg) {
+    return function (rng, o) {
+      o.a = normal(rng, 5.2, 0.1);
+      o.e = rayleigh(rng, 0.06, 0, 0.2);
+      o.i = rayleigh(rng, 11 * D2R, 0, 35 * D2R);
+      o.p = 1; o.q = 1; o.phiCenter = centerDeg * D2R; o.k = 0;
+      o.amp = uniform(rng, 2, 30) * D2R;
+      o.period = normal(rng, 150, 20);
+    };
+  }
+
+  var BELT_GROUPS = {
+    kuiper: [
+      { name: 'cold classical', frac: 0.32, color: [0.86, 0.70, 0.58],
+        sample: function (rng, o) {
+          o.a = uniform(rng, 42, 47.5);
+          o.e = rayleigh(rng, 0.04, 0, 0.12);
+          o.i = rayleigh(rng, 2.2 * D2R, 0, 7 * D2R);
+        } },
+      { name: 'hot classical', frac: 0.26, color: [0.72, 0.74, 0.80],
+        sample: function (rng, o) {
+          o.a = uniform(rng, 40, 48);
+          o.e = rayleigh(rng, 0.11, 0, 0.30);
+          o.i = rayleigh(rng, 13 * D2R, 0, 40 * D2R);
+        } },
+      { name: 'plutino', frac: 0.22, color: [0.80, 0.70, 0.64],
+        sample: function (rng, o) {
+          o.a = normal(rng, 39.45, 0.25);
+          o.e = rayleigh(rng, 0.14, 0.03, 0.34);
+          o.i = rayleigh(rng, 11 * D2R, 0, 35 * D2R);
+          o.p = 3; o.q = 2; o.phiCenter = Math.PI; o.k = Math.floor(rng() * 3);
+          o.amp = uniform(rng, 15, 90) * D2R;
+          o.period = normal(rng, 20000, 3000);
+        } },
+      { name: 'twotino', frac: 0.06, color: [0.74, 0.72, 0.78],
+        sample: function (rng, o) {
+          o.a = normal(rng, 47.8, 0.15);
+          o.e = uniform(rng, 0.10, 0.35);
+          o.i = rayleigh(rng, 8 * D2R, 0, 30 * D2R);
+          o.p = 2; o.q = 1; o.phiCenter = Math.PI; o.k = Math.floor(rng() * 2);
+          o.amp = uniform(rng, 20, 60) * D2R;
+          o.period = normal(rng, 20000, 4000);
+        } },
+      { name: 'scattered disk', frac: 0.14, color: [0.66, 0.72, 0.86],
+        sample: function (rng, o) {
+          var q = uniform(rng, 30, 40);
+          o.a = Math.exp(uniform(rng, Math.log(50), Math.log(150)));
+          o.e = Math.min(0.75, 1 - q / o.a);
+          o.i = rayleigh(rng, 15 * D2R, 0, 45 * D2R);
+        } }
+    ],
+    asteroid: [
+      { name: 'inner main belt', frac: 0.30, color: [0.70, 0.66, 0.60], sample: mainBelt(2.1, 2.5) },
+      { name: 'middle main belt', frac: 0.32, color: [0.70, 0.66, 0.60], sample: mainBelt(2.5, 2.82) },
+      { name: 'outer main belt', frac: 0.26, color: [0.70, 0.66, 0.60], sample: mainBelt(2.82, 3.3) },
+      { name: 'hilda', frac: 0.05, color: [0.62, 0.56, 0.50],
+        sample: function (rng, o) {
+          o.a = normal(rng, 3.97, 0.04);
+          o.e = uniform(rng, 0.07, 0.30);
+          o.i = rayleigh(rng, 7 * D2R, 0, 20 * D2R);
+          o.p = 2; o.q = 3; o.phiCenter = 0; o.k = Math.floor(rng() * 2);
+          o.amp = uniform(rng, 5, 40) * D2R;
+          o.period = normal(rng, 270, 30);
+        } },
+      { name: 'trojan L4', frac: 0.07 * 0.55, color: [0.62, 0.62, 0.66], sample: trojan(60) },
+      { name: 'trojan L5', frac: 0.07 * 0.45, color: [0.62, 0.62, 0.66], sample: trojan(-60) }
+    ]
+  };
+
+  /*
+   * Seeded, deterministic population of one belt. Returns typed arrays laid out
+   * exactly like the geometry attributes (one generator serves both the THREE
+   * builder and the tests), the per-particle group index and the group names.
+   */
+  function generateBelt(kind, count) {
+    var def = BELT_DEFAULTS[kind];
+    if (!def) throw new Error('OrreryVisuals: unknown belt kind "' + kind + '"');
+    count = (count | 0) > 0 ? (count | 0) : def.count;
+    var groups = BELT_GROUPS[kind];
+    var rng = mulberry32(def.seed);
+    var aOrbit = new Float32Array(count * 4), aOrbit2 = new Float32Array(count * 4);
+    var aRes = new Float32Array(count * 4), aLib = new Float32Array(count * 3);
+    var colors = new Float32Array(count * 3), group = new Uint8Array(count);
+    var names = [], cum = [], total = 0, g, i, gi, grp, u, n, size, bright, rate, c;
+    var o = { a: 0, e: 0, i: 0, p: 0, q: 0, phiCenter: 0, k: 0, amp: 0, period: 0 };
+    for (g = 0; g < groups.length; g++) { total += groups[g].frac; names.push(groups[g].name); }
+    for (g = 0; g < groups.length; g++) cum.push((g ? cum[g - 1] : 0) + groups[g].frac / total);
+    for (i = 0; i < count; i++) {
+      /* golden-ratio sequence: exact group proportions, groups interleaved in draw order */
+      u = ((i + 0.5) * GOLDEN) % 1;
+      for (gi = 0; gi < groups.length - 1 && u >= cum[gi]; gi++) { /* pick group */ }
+      grp = groups[gi];
+      o.a = 0; o.e = 0; o.i = 0; o.p = 0; o.q = 0; o.phiCenter = 0; o.k = 0; o.amp = 0; o.period = 0;
+      grp.sample(rng, o);
+      n = TAU / (Math.pow(o.a, 1.5) * 365.25);
+      size = rng() < 0.04 ? uniform(rng, 2.0, 2.6) : uniform(rng, 1.0, 1.6);
+      bright = uniform(rng, 0.55, 1.0);
+      rate = o.period > 0 ? TAU / (o.period * 365.25) : 0;
+      aOrbit[i * 4] = o.a; aOrbit[i * 4 + 1] = o.e; aOrbit[i * 4 + 2] = o.i; aOrbit[i * 4 + 3] = rng() * TAU;
+      aOrbit2[i * 4] = rng() * TAU; aOrbit2[i * 4 + 1] = rng() * TAU; aOrbit2[i * 4 + 2] = n; aOrbit2[i * 4 + 3] = size;
+      aRes[i * 4] = o.p; aRes[i * 4 + 1] = o.q; aRes[i * 4 + 2] = o.phiCenter; aRes[i * 4 + 3] = o.k;
+      aLib[i * 3] = o.amp; aLib[i * 3 + 1] = rng() * TAU; aLib[i * 3 + 2] = rate;
+      c = grp.color;
+      colors[i * 3] = c[0] * bright; colors[i * 3 + 1] = c[1] * bright; colors[i * 3 + 2] = c[2] * bright;
+      group[i] = gi;
+    }
+    return {
+      kind: kind, count: count, refBody: def.refBody, opacity: def.opacity,
+      groups: names, group: group,
+      elements: { aOrbit: aOrbit, aOrbit2: aOrbit2, aRes: aRes, aLib: aLib },
+      colors: colors
+    };
+  }
+
+  /* Plain-object view of particle i of a generated belt (the float32 values the GPU sees). */
+  function beltParticle(gen, i) {
+    var o = gen.elements.aOrbit, o2 = gen.elements.aOrbit2, r = gen.elements.aRes, l = gen.elements.aLib;
+    return {
+      a: o[i * 4], e: o[i * 4 + 1], i: o[i * 4 + 2], Omega: o[i * 4 + 3],
+      omega: o2[i * 4], M0: o2[i * 4 + 1], n: o2[i * 4 + 2], size: o2[i * 4 + 3],
+      p: r[i * 4], q: r[i * 4 + 1], phiCenter: r[i * 4 + 2], k: r[i * 4 + 3],
+      amp: l[i * 3], phase: l[i * 3 + 1], rate: l[i * 3 + 2],
+      group: gen.groups[gen.group[i]]
+    };
+  }
+
+  function wrapPi(x) { return x - TAU * Math.floor((x + Math.PI) / TAU); }
+
+  /* Kepler's equation by Newton, exactly as the vertex shader does it. */
+  function solveKepler(M, e) {
+    var E = M + e * Math.sin(M), it;
+    for (it = 0; it < KEPLER_ITERATIONS; it++) {
+      E = E - (E - e * Math.sin(E) - M) / (1 - e * Math.cos(E));
+    }
+    return E;
+  }
+
+  /*
+   * CPU twin of BELT_VERT: heliocentric ecliptic J2000 position (AU) of a particle
+   * at `days` (TT days since J2000) with the reference planet at mean longitude
+   * refLon (radians). Also returns r, the wrapped mean anomaly M and varpi.
+   */
+  function positionOf(pt, days, refLon) {
+    var varpi = pt.Omega + pt.omega;
+    var M = pt.M0 + pt.n * days;
+    if (pt.p > 0.5) {
+      var phi = pt.phiCenter + pt.amp * Math.sin(pt.phase + pt.rate * days);
+      var lambda = (pt.q * refLon + (pt.p - pt.q) * varpi + phi) / pt.p + pt.k * TAU / pt.p;
+      M = lambda - varpi;
+    }
+    M = wrapPi(M);
+    var E = solveKepler(M, pt.e);
+    var xp = pt.a * (Math.cos(E) - pt.e);
+    var yp = pt.a * Math.sqrt(1 - pt.e * pt.e) * Math.sin(E);
+    var cw = Math.cos(pt.omega), sw = Math.sin(pt.omega);
+    var cO = Math.cos(pt.Omega), sO = Math.sin(pt.Omega);
+    var ci = Math.cos(pt.i), si = Math.sin(pt.i);
+    var x = (cw * cO - sw * sO * ci) * xp + (-sw * cO - cw * sO * ci) * yp;
+    var y = (cw * sO + sw * cO * ci) * xp + (-sw * sO + cw * cO * ci) * yp;
+    var z = (sw * si) * xp + (cw * si) * yp;
+    return { x: x, y: y, z: z, r: Math.sqrt(x * x + y * y + z * z), M: M, E: E, varpi: varpi };
+  }
+
+  function orbitalBelt(opts) {
+    var T = requireThree();
+    opts = opts || {};
+    var def = BELT_DEFAULTS[opts.kind];
+    if (!def) throw new Error('OrreryVisuals.orbitalBelt: kind must be "asteroid" or "kuiper"');
+    var gen = generateBelt(opts.kind, opts.count);
+    var count = gen.count;
+    var geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(new Float32Array(count * 3), 3));
+    geo.setAttribute('aOrbit', new T.BufferAttribute(gen.elements.aOrbit, 4));
+    geo.setAttribute('aOrbit2', new T.BufferAttribute(gen.elements.aOrbit2, 4));
+    geo.setAttribute('aRes', new T.BufferAttribute(gen.elements.aRes, 4));
+    geo.setAttribute('aLib', new T.BufferAttribute(gen.elements.aLib, 3));
+    geo.setAttribute('color', new T.BufferAttribute(gen.colors, 3));
+    var pr = (typeof window !== 'undefined' && window.devicePixelRatio) ? Math.min(window.devicePixelRatio, 2) : 1;
+    var mat = new T.ShaderMaterial({
+      uniforms: {
+        uDays: { value: 0 },
+        uRefLon: { value: 0 },
+        uScale: { value: opts.scale === undefined ? 22 : opts.scale },
+        uExponent: { value: opts.exponent === undefined ? 0.6 : opts.exponent },
+        uPixelRatio: { value: pr },
+        uOpacity: { value: opts.opacity === undefined ? def.opacity : opts.opacity },
+        uSizeScale: { value: 1 }
+      },
+      vertexShader: BELT_VERT,
+      fragmentShader: BELT_FRAG,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: T.NormalBlending
+    });
+    var points = new T.Points(geo, mat);
+    points.frustumCulled = false;
+    points.name = opts.kind === 'kuiper' ? 'kuiperBelt' : 'asteroidBelt';
+    points.userData = { kind: opts.kind, refBody: def.refBody, count: count };
+    return points;
+  }
+
+  var beltReference = {
+    generate: generateBelt,
+    particle: beltParticle,
+    positionOf: positionOf,
+    solveKepler: solveKepler,
+    wrapPi: wrapPi,
+    defaults: BELT_DEFAULTS,
+    groups: BELT_GROUPS,
+    kirkwoodGaps: KIRKWOOD_GAPS,
+    KEPLER_ITERATIONS: KEPLER_ITERATIONS,
+    shaders: { BELT_VERT: BELT_VERT, BELT_FRAG: BELT_FRAG }
+  };
+
+  /* ------------------------------------------------------------------ */
   /* Public API                                                          */
   /* ------------------------------------------------------------------ */
 
@@ -1758,6 +2130,8 @@
     milkyWay: milkyWay,
     asteroidBelt: asteroidBelt,
     kuiperBelt: kuiperBelt,
+    orbitalBelt: orbitalBelt,
+    beltReference: beltReference,
     PLANET_STYLE: PLANET_STYLE,
     ATMOSPHERE: ATMOSPHERE,
     DEFAULT_SIZE: DEFAULT_SIZE,
@@ -1768,7 +2142,7 @@
     shaders: {
       GLSL_NOISE: GLSL_NOISE, SUN_VERT: SUN_VERT, SUN_FRAG: SUN_FRAG, CORONA_VERT: CORONA_VERT,
       CORONA_FRAG: CORONA_FRAG, ATMO_VERT: ATMO_VERT, ATMO_FRAG: ATMO_FRAG, STAR_VERT: STAR_VERT,
-      STAR_FRAG: STAR_FRAG, SKY_VERT: SKY_VERT, SKY_FRAG: SKY_FRAG
+      STAR_FRAG: STAR_FRAG, SKY_VERT: SKY_VERT, SKY_FRAG: SKY_FRAG, BELT_VERT: BELT_VERT, BELT_FRAG: BELT_FRAG
     }
   };
 
