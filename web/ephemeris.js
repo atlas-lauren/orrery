@@ -18,6 +18,8 @@
  *             psi_A / omega_A / chi_A angles) for the mean pole and equinox
  *             of date; Earth rotation angle (IAU 2000) and GMST (IAU 2006)
  *             for the Greenwich meridian. Nutation is ignored.
+ *   Moon rot.: IAU WGCCRE 2009 lunar rotation model (Archinal et al. 2011),
+ *             mean Earth / polar axis frame, physical libration included.
  *
  * Frame: heliocentric ecliptic J2000, right-handed, AU. x toward the vernal
  * equinox, z toward ecliptic north. Longitudes in [0, 360) degrees.
@@ -708,6 +710,89 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Moon orientation: IAU WGCCRE 2009 rotation model (Archinal et al. 2011,
+  // table 2), i.e. the mean Earth / polar axis frame, whose meridian 0 is the
+  // mean sub-Earth meridian. The pole and prime-meridian angle carry the
+  // physical libration terms; the optical libration follows from the orbit, so
+  // the sub-Earth point wanders within about 8 deg of selenographic (0, 0).
+  // d and T are TT days and Julian centuries from J2000.
+  // ---------------------------------------------------------------------------
+
+  // Arguments E1 .. E13, degrees: [value at J2000, rate per day].
+  var MOON_ARGS = [
+    [125.045, -0.0529921], [250.089, -0.1059842], [260.008, 13.0120009],
+    [176.625, 13.3407154], [357.529, 0.9856003], [311.589, 26.4057084],
+    [134.963, 13.0649930], [276.617, 0.3287146], [34.226, 1.7484877],
+    [15.134, -0.1589763], [119.743, 0.0036096], [239.961, 0.1643573],
+    [25.053, 12.9590088]
+  ];
+  // Coefficients (degrees) of sin E_i in alpha0, cos E_i in delta0, sin E_i in W.
+  var MOON_ALPHA = [-3.8787, -0.1204, 0.0700, -0.0172, 0, 0.0072, 0, 0, 0, -0.0052, 0, 0, 0.0043];
+  var MOON_DELTA = [1.5419, 0.0239, -0.0278, 0.0068, 0, -0.0029, 0.0009, 0, 0, 0.0008, 0, 0, -0.0009];
+  var MOON_W = [3.5610, 0.1208, -0.0642, 0.0158, 0.0252, -0.0066, -0.0047, -0.0046, 0.0028,
+    0.0052, 0.0040, 0.0019, -0.0044];
+
+  // Orientation of the Moon at a UT Julian Date, in ecliptic J2000:
+  //   pole  unit vector of the lunar north pole
+  //   node  unit vector toward the ascending node of the lunar equator on the
+  //         J2000 equator (perpendicular to pole)
+  //   w     prime-meridian angle, radians in [0, 2pi): from node to the
+  //         selenographic meridian 0, counterclockwise seen from the pole
+  function moonOrientation(jd) {
+    var jdUT = toNumber(jd, 'jd');
+    var d = ttFromUt(jdUT) - J2000;
+    var T = d / 36525;
+    var ra = 269.9949 + 0.0031 * T;
+    var dec = 66.5392 + 0.0130 * T;
+    var w = 38.3213 + 13.17635815 * d - 1.4e-12 * d * d;
+    for (var i = 0; i < MOON_ARGS.length; i++) {
+      var e = (MOON_ARGS[i][0] + MOON_ARGS[i][1] * d) * DEG;
+      var s = Math.sin(e);
+      ra += MOON_ALPHA[i] * s;
+      dec += MOON_DELTA[i] * Math.cos(e);
+      w += MOON_W[i] * s;
+    }
+    ra *= DEG;
+    dec *= DEG;
+    // Equatorial to ecliptic J2000: rotate about x by the J2000 obliquity.
+    var eps = EPS0_ARCSEC * ARCSEC;
+    var ce = Math.cos(eps), se = Math.sin(eps);
+    var px = Math.cos(dec) * Math.cos(ra), py = Math.cos(dec) * Math.sin(ra), pz = Math.sin(dec);
+    // node = equatorial north x pole, normalised: right ascension alpha0 + 90 deg.
+    var nx = -Math.sin(ra), ny = Math.cos(ra);
+    return {
+      pole: { x: px, y: py * ce + pz * se, z: -py * se + pz * ce },
+      node: { x: nx, y: ny * ce, z: -ny * se },
+      w: mod(w, 360) * DEG
+    };
+  }
+
+  // Selenographic point with the Earth at the zenith (the geocentric libration):
+  // { lat, lon } in degrees, lon east-positive (toward Mare Crisium) in
+  // [-180, 180]. Texture longitude 0 of a lunar globe must point along the
+  // meridian-0 axis, node rotated by w about the pole.
+  function moonLibration(jd) {
+    var jdUT = toNumber(jd, 'jd');
+    var o = moonOrientation(jdUT);
+    var m = moonGeocentric(jdUT);
+    var r = m.r > 0 ? m.r : 1;
+    var ex = -m.x / r, ey = -m.y / r, ez = -m.z / r;
+    var p = o.pole, n = o.node;
+    var cw = Math.cos(o.w), sw = Math.sin(o.w);
+    // v = pole x node (90 deg east of the node along the lunar equator)
+    var vx = p.y * n.z - p.z * n.y, vy = p.z * n.x - p.x * n.z, vz = p.x * n.y - p.y * n.x;
+    var xx = n.x * cw + vx * sw, xy = n.y * cw + vy * sw, xz = n.z * cw + vz * sw;
+    var yx = p.y * xz - p.z * xy, yy = p.z * xx - p.x * xz, yz = p.x * xy - p.y * xx;
+    var fx = ex * xx + ey * xy + ez * xz;
+    var fy = ex * yx + ey * yy + ez * yz;
+    var fz = ex * p.x + ey * p.y + ez * p.z;
+    return {
+      lat: Math.asin(Math.max(-1, Math.min(1, fz))) * RAD,
+      lon: Math.atan2(fy, fx) * RAD
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // Convenience
   // ---------------------------------------------------------------------------
 
@@ -746,6 +831,8 @@
     orbitalPeriodDays: orbitalPeriodDays,
     earthOrientation: earthOrientation,
     subsolarPoint: subsolarPoint,
+    moonOrientation: moonOrientation,
+    moonLibration: moonLibration,
     range: range,
     elementSet: elementSet,
     J2000: J2000,

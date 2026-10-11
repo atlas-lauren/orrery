@@ -337,7 +337,7 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(description="Serve the orrery web app and positions API.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--ephemeris", default=None,
                         help="kernel file in data/ (default: $ORRERY_EPHEMERIS, de441.bsp, or de440s.bsp)")
     args = parser.parse_args(argv)

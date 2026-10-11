@@ -11,6 +11,8 @@
  * Earth starts with its procedural textures, then streams in NASA Blue Marble
  * imagery after start-up, and is oriented from Ephemeris.earthOrientation (mean
  * pole and equinox of date, Greenwich sidereal time) when that function exists.
+ * The Moon likewise swaps in NASA's LRO colour mosaic and LOLA relief (shipped in
+ * textures/) and is turned with Ephemeris.moonOrientation (IAU rotation model).
  *
  * Sections: constants, calendar helpers, startOrrery (state, moon catalogue, scene
  * setup, bodies, orbits, moon systems, precision mode, camera, UI, frame loop).
@@ -383,10 +385,13 @@
     };
     state.jd = clamp(state.jd, JD_MIN, JD_MAX);
 
-    // Debug handle: the geographic point with the Sun overhead at the current date is
-    // the ground truth the Earth orientation below is checked against.
+    // Debug handle: the geographic point with the Sun overhead and the selenographic
+    // point with the Earth overhead at the current date are the ground truth the Earth
+    // and Moon orientations below are checked against.
     window.__orrery = {
       subsolar: () => (typeof Eph.subsolarPoint === 'function' ? Eph.subsolarPoint(state.jd) : null),
+      __bodies: () => bodies, // TEMP-VERIFY
+      libration: () => (typeof Eph.moonLibration === 'function' ? Eph.moonLibration(state.jd) : null),
       jd: () => state.jd
     };
 
@@ -924,6 +929,7 @@
       const moonRec = bodies.moon;
       if (plutoRec) { plutoRec.visible = state.showPluto; plutoRec.group.visible = state.showPluto; }
       if (moonRec) { moonRec.visible = state.showMoon; moonRec.group.visible = state.showMoon; }
+      if (rowByName.moon) rowByName.moon.hidden = !state.showMoon;
       if (orbits.pluto) orbits.pluto.line.visible = state.showOrbits && state.showPluto;
       for (const rec of bodyList) {
         if (rec.isMoon) continue;   // gated per frame in updateMoonSystems
@@ -1020,27 +1026,30 @@
       return true;
     }
 
-    function loadEarthImagery() {
-      if (earthImagery.started || !bodies.earth || typeof THREE.TextureLoader !== 'function') return;
-      earthImagery.started = true;
+    // Streams one body's image files and hands each to apply(key, texture) as it
+    // arrives; apply returns false for a key it does not know. Failures are logged
+    // once and leave the procedural textures in place.
+    function streamImagery(label, imagery, base, files, apply) {
+      if (imagery.started || typeof THREE.TextureLoader !== 'function') return;
+      imagery.started = true;
       let loader;
       try {
         loader = new THREE.TextureLoader();
         loader.setCrossOrigin('anonymous');
       } catch (err) {
-        console.info('Earth imagery unavailable; keeping the procedural globe', err);
+        console.info(label + ' imagery unavailable; keeping the procedural globe', err);
         return;
       }
       const fail = (key, err) => {
-        if (earthImagery.failed) return;
-        earthImagery.failed = true;
-        console.info('Earth imagery could not be fetched (' + key + '); the procedural textures stay where needed', err || '');
+        if (imagery.failed) return;
+        imagery.failed = true;
+        console.info(label + ' imagery could not be fetched (' + key + '); the procedural textures stay where needed', err || '');
       };
-      for (const key of Object.keys(EARTH_TEXTURE_FILES)) {
+      for (const key of Object.keys(files)) {
         try {
-          loader.load(EARTH_TEXTURE_BASE + EARTH_TEXTURE_FILES[key], (tex) => {
+          loader.load(base + files[key], (tex) => {
             try {
-              if (applyEarthTexture(key, tex)) earthImagery.loaded++; else disposeTexture(tex, null);
+              if (apply(key, tex)) imagery.loaded++; else disposeTexture(tex, null);
             } catch (err) {
               disposeTexture(tex, null);
               fail(key, err);
@@ -1050,6 +1059,57 @@
           fail(key, err);
         }
       }
+    }
+
+    function loadEarthImagery() {
+      if (!bodies.earth) return;
+      streamImagery('Earth', earthImagery, EARTH_TEXTURE_BASE, EARTH_TEXTURE_FILES, applyEarthTexture);
+    }
+
+    // ---- Moon imagery -----------------------------------------------------------------
+    //
+    // The Moon gets the same treatment from NASA's CGI Moon Kit (Scientific
+    // Visualization Studio, public domain): the LRO Camera colour mosaic, and the LOLA
+    // elevation map as its bump map. NASA's server does not allow cross-origin texture
+    // loads, so both files ship with the site. Like the Earth maps they are centred on
+    // longitude 0, which orientMoon turns toward the mean sub-Earth point.
+
+    const MOON_TEXTURE_BASE = 'textures/';
+    const MOON_TEXTURE_FILES = {
+      map: 'moon_lroc_2048.jpg',
+      bump: 'moon_ldem_1024.jpg'
+    };
+    const moonImagery = { started: false, failed: false, loaded: 0 };
+
+    function applyMoonTexture(key, tex) {
+      const rec = bodies.moon;
+      if (!rec || !rec.material) return false;
+      const material = rec.material;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+      if (key === 'map') {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        const old = material.map;
+        material.map = tex;
+        material.color.setHex(0xffffff);   // a map-less material carried the accent colour
+        material.needsUpdate = true;
+        disposeTexture(old, tex);
+      } else if (key === 'bump') {
+        const old = material.bumpMap;
+        material.bumpMap = tex;
+        material.bumpScale = 0.02 * rec.radius;
+        material.needsUpdate = true;
+        disposeTexture(old, tex);
+      } else {
+        return false;
+      }
+      return true;
+    }
+
+    function loadMoonImagery() {
+      if (!bodies.moon) return;
+      streamImagery('Moon', moonImagery, MOON_TEXTURE_BASE, MOON_TEXTURE_FILES, applyMoonTexture);
     }
 
     // ---- Orbits ---------------------------------------------------------------------
@@ -2004,7 +2064,7 @@
     function buildInfoRows() {
       dom.infoRows.textContent = '';
       removeInfoMoonRows();
-      for (const name of INFO_BODIES) {
+      for (const name of PLANETS) {
         const row = document.createElement('div');
         row.className = 'info-row';
         row.setAttribute('role', 'listitem');
@@ -2036,6 +2096,13 @@
         dom.infoRows.appendChild(row);
         rowByName[name] = row;
         rowParts[name] = { sign, lonVal, dSun, dEarth };
+      }
+      // Earth's Moon is always listed beneath Earth, in the same form as the
+      // other planets' moons (distance from the planet in km and radii, period).
+      if (rowByName.earth) {
+        const moonRow = buildMinorRow('moon', accentOf('moon'), MOON_SIDEREAL_PERIOD_DAYS, false);
+        moonRow.hidden = !state.showMoon;
+        rowByName.earth.insertAdjacentElement('afterend', moonRow);
       }
     }
 
@@ -2075,26 +2142,33 @@
       infoMoons.planet = null;
     }
 
+    const MOON_SIDEREAL_PERIOD_DAYS = 27.321662;
+
     function buildInfoMoonRow(rec) {
       const md = moonData[rec.name];
+      return buildMinorRow(rec.name, rec.accent, md.periodDays, md.retrograde);
+    }
+
+    // A moon sub-row: name, distance from its planet (km and planet radii), period.
+    function buildMinorRow(name, accent, periodDays, retrograde) {
       const row = document.createElement('div');
       row.className = 'info-row minor';
       row.setAttribute('role', 'listitem');
-      row.dataset.body = rec.name;
-      row.style.setProperty('--row-color', hexColor(rec.accent));
+      row.dataset.body = name;
+      row.style.setProperty('--row-color', hexColor(accent));
       const dot = document.createElement('span');
       dot.className = 'dot';
       const nameEl = document.createElement('span');
       nameEl.className = 'name';
-      nameEl.textContent = DISPLAY_NAME[rec.name];
+      nameEl.textContent = DISPLAY_NAME[name];
       const km = document.createElement('span');
       km.className = 'lon';
       const dist = document.createElement('span');
       dist.className = 'dist';
       const radii = document.createElement('span');
       const period = document.createElement('span');
-      period.textContent = formatPeriod(md.periodDays);
-      if (md.retrograde) {
+      period.textContent = formatPeriod(periodDays);
+      if (retrograde) {
         const tag = document.createElement('span');
         tag.className = 'tag';
         tag.textContent = 'retrograde';
@@ -2106,11 +2180,11 @@
       row.appendChild(nameEl);
       row.appendChild(km);
       row.appendChild(dist);
-      row.classList.toggle('selected', state.focus === rec.name);
-      row.classList.toggle('hover', state.hover === rec.name);
-      row.addEventListener('click', () => setFocus(rec.name));
-      rowByName[rec.name] = row;
-      rowParts[rec.name] = { km, radii };
+      row.classList.toggle('selected', state.focus === name);
+      row.classList.toggle('hover', state.hover === name);
+      row.addEventListener('click', () => setFocus(name));
+      rowByName[name] = row;
+      rowParts[name] = { km, radii };
       return row;
     }
 
@@ -2147,19 +2221,13 @@
     function updateInfoPanel(positions, source) {
       const b = positions.bodies;
       const earth = b.earth;
-      for (const name of INFO_BODIES) {
+      for (const name of PLANETS) {
         const p = b[name];
         const parts = rowParts[name];
         if (!p || !parts) continue;
         const zt = zodiacText(p.lon);
         const sp = zt.indexOf(' ');
         setText(parts.sign, zt.slice(0, sp));
-        if (name === 'moon') {
-          setText(parts.lonVal, zt.slice(sp + 1) + '  (' + p.lon.toFixed(2) + '° geocentric)');
-          setText(parts.dSun, 'From Earth ' + Math.round(p.r * AU_KM).toLocaleString('en-US') + ' km');
-          setText(parts.dEarth, '');
-          continue;
-        }
         setText(parts.lonVal, zt.slice(sp + 1) + '  (' + p.lon.toFixed(2) + '°)');
         setText(parts.dSun, 'Sun ' + p.r.toFixed(3) + ' AU');
         if (name === 'earth') {
@@ -2168,6 +2236,11 @@
           const d = Math.sqrt((p.x - earth.x) ** 2 + (p.y - earth.y) ** 2 + (p.z - earth.z) ** 2);
           setText(parts.dEarth, 'Earth ' + d.toFixed(3) + ' AU');
         }
+      }
+      if (b.moon && rowParts.moon) {
+        const km = b.moon.r * AU_KM;
+        setText(rowParts.moon.km, Math.round(km).toLocaleString('en-US') + ' km');
+        setText(rowParts.moon.radii, (km / REAL_RADIUS_KM.earth).toFixed(1) + ' R');
       }
       updateInfoMoonRows();
       let badge;
@@ -2445,10 +2518,10 @@
     // Ephemeris.earthOrientation the IAU pole and mean rotation period stand in, as
     // for every other planet. Clouds share the frame plus a slow drift.
     const earthOrient = { available: typeof Eph.earthOrientation === 'function' };
-    const earthAxisX = new THREE.Vector3();
-    const earthAxisY = new THREE.Vector3();
-    const earthAxisZ = new THREE.Vector3();
-    const earthBasis = new THREE.Matrix4();
+    const frameX = new THREE.Vector3();
+    const frameY = new THREE.Vector3();
+    const frameZ = new THREE.Vector3();
+    const frameBasis = new THREE.Matrix4();
     const CLOUD_DRIFT_PERIOD_DAYS = 31;
 
     function cloudDrift(jd) {
@@ -2477,23 +2550,67 @@
         disableEarthOrientation(rec, 'returned an unexpected value');
         return false;
       }
-      earthAxisX.set(o.equinox.x, o.equinox.z, -o.equinox.y);
-      earthAxisY.set(o.pole.x, o.pole.z, -o.pole.y);
-      const lx = earthAxisX.lengthSq();
-      const ly = earthAxisY.lengthSq();
-      if (!(lx > 1e-12) || !(ly > 1e-12) || !Number.isFinite(lx) || !Number.isFinite(ly)) {
+      if (!setTiltFrame(rec.tilt, o.equinox, o.pole)) {
         disableEarthOrientation(rec, 'returned a degenerate frame');
         return false;
       }
-      earthAxisX.normalize();
-      earthAxisY.normalize();
-      // Re-orthogonalise around the pole so the basis is a pure rotation.
-      earthAxisZ.crossVectors(earthAxisX, earthAxisY).normalize();
-      earthAxisX.crossVectors(earthAxisY, earthAxisZ);
-      earthBasis.makeBasis(earthAxisX, earthAxisY, earthAxisZ);
-      rec.tilt.quaternion.setFromRotationMatrix(earthBasis);
       rec.spin.rotation.y = o.gmst;
       if (rec.clouds) rec.clouds.rotation.y = o.gmst + cloudDrift(jd);
+      return true;
+    }
+
+    // Points a tilt group's +X along x and +Y along pole (ecliptic J2000 vectors),
+    // re-orthogonalised around the pole so the basis is a pure rotation. Returns
+    // false, leaving the group untouched, for a degenerate pair.
+    function setTiltFrame(tilt, x, pole) {
+      frameX.set(x.x, x.z, -x.y);
+      frameY.set(pole.x, pole.z, -pole.y);
+      const lx = frameX.lengthSq();
+      const ly = frameY.lengthSq();
+      if (!(lx > 1e-12) || !(ly > 1e-12) || !Number.isFinite(lx) || !Number.isFinite(ly)) return false;
+      frameX.normalize();
+      frameY.normalize();
+      frameZ.crossVectors(frameX, frameY);
+      if (!(frameZ.lengthSq() > 1e-12)) return false;
+      frameZ.normalize();
+      frameX.crossVectors(frameY, frameZ);
+      frameBasis.makeBasis(frameX, frameY, frameZ);
+      tilt.quaternion.setFromRotationMatrix(frameBasis);
+      return true;
+    }
+
+    // The Moon's real orientation from Ephemeris.moonOrientation: the tilt basis sends
+    // +X to the node of the lunar equator and +Y to the lunar pole, and rotation.y = W
+    // brings map longitude 0 round to the mean sub-Earth meridian, so the near side
+    // faces Earth with its true libration. Without it the Moon keeps a plain spin.
+    const moonOrient = { available: typeof Eph.moonOrientation === 'function' };
+
+    function disableMoonOrientation(rec, reason, err) {
+      moonOrient.available = false;
+      console.warn('Ephemeris.moonOrientation ' + reason + '; the Moon falls back to a uniform spin', err || '');
+      rec.tilt.rotation.set(0, 0, 0);
+      rec.spinSign = orientBody(rec.tilt, 'moon', null);
+    }
+
+    // Returns true when the real orientation was applied, false to use the fallback.
+    function orientMoon(rec, jd) {
+      if (!moonOrient.available) return false;
+      let o = null;
+      try {
+        o = Eph.moonOrientation(jd);
+      } catch (err) {
+        disableMoonOrientation(rec, 'threw', err);
+        return false;
+      }
+      if (!o || !o.pole || !o.node || !Number.isFinite(o.w)) {
+        disableMoonOrientation(rec, 'returned an unexpected value');
+        return false;
+      }
+      if (!setTiltFrame(rec.tilt, o.node, o.pole)) {
+        disableMoonOrientation(rec, 'returned a degenerate frame');
+        return false;
+      }
+      rec.spin.rotation.y = o.w;
       return true;
     }
 
@@ -2536,7 +2653,7 @@
         const len = moonDir.length();
         if (len > 0) moonDir.multiplyScalar(moonSceneDistance() / len);
         moonRec.group.position.copy(earthScene).add(moonDir);
-        moonRec.spin.rotation.y = spinAngle('moon', jd) * moonRec.spinSign;
+        if (!orientMoon(moonRec, jd)) moonRec.spin.rotation.y = spinAngle('moon', jd) * moonRec.spinSign;
       }
       if (bodies.sun) bodies.sun.spin.rotation.y = spinAngle('sun', jd) * bodies.sun.spinSign;
     }
@@ -2684,6 +2801,7 @@
       setTimeout(() => {
         if (dom.loading && dom.loading.parentNode) dom.loading.parentNode.removeChild(dom.loading);
         loadEarthImagery();
+        loadMoonImagery();
       }, 1000);
     }
 
