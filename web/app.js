@@ -390,7 +390,6 @@
     // and Moon orientations below are checked against.
     window.__orrery = {
       subsolar: () => (typeof Eph.subsolarPoint === 'function' ? Eph.subsolarPoint(state.jd) : null),
-      __bodies: () => bodies, // TEMP-VERIFY
       libration: () => (typeof Eph.moonLibration === 'function' ? Eph.moonLibration(state.jd) : null),
       jd: () => state.jd
     };
