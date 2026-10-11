@@ -414,6 +414,13 @@
     font-weight: 600;
     color: var(--muted);
   }
+  #info-panel .panel-tools { display: flex; align-items: center; gap: 6px; }
+  .mini-toggle { display: inline-flex; align-items: center; gap: 6px; margin-right: 4px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); cursor: pointer; user-select: none; }
+  .switch.mini { width: 28px; height: 16px; }
+  .switch.mini::before { width: 10px; height: 10px; top: 2px; left: 2px; }
+  .switch.mini:checked::before { transform: translateX(12px); }
+  #info-panel .fineprint[hidden] { display: none; }
+  .info-row[hidden] { display: none; }
   #info-panel .badges { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 10px; }
   .badge {
     display: inline-flex;
@@ -716,6 +723,7 @@
   <div class="row"><label for="opt-orbits">Orbits <span class="sub">Sampled paths over one period</span></label><input class="switch" type="checkbox" id="opt-orbits" checked></div>
   <div class="row"><label for="opt-labels">Labels <span class="sub">Body names in the scene</span></label><input class="switch" type="checkbox" id="opt-labels" checked></div>
   <div class="row"><label for="opt-belt">Asteroid belt <span class="sub">2.2 to 3.3 AU, decorative</span></label><input class="switch" type="checkbox" id="opt-belt" checked></div>
+  <div class="row"><label for="opt-kuiper">Kuiper belt <span class="sub">30 to 50 AU, decorative</span></label><input class="switch" type="checkbox" id="opt-kuiper" checked></div>
   <div class="row"><label for="opt-milkyway">Milky Way <span class="sub">Galactic band on the sky</span></label><input class="switch" type="checkbox" id="opt-milkyway" checked></div>
   <div class="row"><label for="opt-bloom">Bloom <span class="sub">Glow on the Sun and highlights</span></label><input class="switch" type="checkbox" id="opt-bloom" checked></div>
   <div class="row"><label for="bloom-strength">Bloom strength</label><div class="slider-wrap"><input class="slider" type="range" id="bloom-strength" min="0" max="2" step="0.05" value="0.5" aria-label="Bloom strength"></div></div>
@@ -765,16 +773,22 @@
 <aside id="info-panel" class="glass" aria-label="Positions">
   <div class="panel-head">
     <h2>Positions</h2>
-    <button id="btn-info-close" class="btn small icon" type="button" title="Hide panel" aria-label="Hide positions panel">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.3 3.3a1 1 0 0 1 1.4 0L8 6.6l3.3-3.3a1 1 0 1 1 1.4 1.4L9.4 8l3.3 3.3a1 1 0 0 1-1.4 1.4L8 9.4l-3.3 3.3a1 1 0 0 1-1.4-1.4L6.6 8 3.3 4.7a1 1 0 0 1 0-1.4z"/></svg>
-    </button>
+    <div class="panel-tools">
+      <label class="mini-toggle" for="opt-pluto-panel"><span>Pluto</span><input class="switch mini" type="checkbox" id="opt-pluto-panel" checked></label>
+      <button id="btn-info-help" class="btn small icon" type="button" title="About these figures" aria-label="About these figures" aria-expanded="false" aria-controls="info-fineprint">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zm0 1.3a5.2 5.2 0 1 0 0 10.4A5.2 5.2 0 0 0 8 2.8zm0 4.1a.8.8 0 0 1 .8.8v3.5a.8.8 0 0 1-1.6 0V7.7a.8.8 0 0 1 .8-.8zm0-2.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/></svg>
+      </button>
+      <button id="btn-info-close" class="btn small icon" type="button" title="Hide panel" aria-label="Hide positions panel">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.3 3.3a1 1 0 0 1 1.4 0L8 6.6l3.3-3.3a1 1 0 1 1 1.4 1.4L9.4 8l3.3 3.3a1 1 0 0 1-1.4 1.4L8 9.4l-3.3 3.3a1 1 0 0 1-1.4-1.4L6.6 8 3.3 4.7a1 1 0 0 1 0-1.4z"/></svg>
+      </button>
+    </div>
   </div>
   <div class="badges">
     <span id="source-badge" class="badge">Keplerian (JPL elements)</span>
     <span id="element-set" class="badge muted">jpl-1800-2050</span>
   </div>
   <div id="info-rows" role="list"></div>
-  <p class="fineprint">Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. Click a row to follow that body. Earth's Moon is always listed beneath Earth; while you follow another planet with moons, they are listed beneath it. Moon rows show distance from the planet's centre (km and planet radii) and orbital period.</p>
+  <p id="info-fineprint" class="fineprint" hidden>Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. Click a row to follow that body. Earth's Moon is always listed beneath Earth; while you follow another planet with moons, they are listed beneath it. Moon rows show distance from the planet's centre (km and planet radii) and orbital period.</p>
 </aside>
 
 <section id="controls" class="glass" aria-label="Time controls">

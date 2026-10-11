@@ -152,9 +152,9 @@
   const CAMERA_PRESETS = {
     default: { elevation: 32, azimuth: 0, au: 7.5, mult: 1.8 },
     inner: { elevation: 42, azimuth: 0, au: 1.8, mult: 1.95 },
-    full: { elevation: 45, azimuth: 0, au: 32, mult: 1.55 },
-    top: { elevation: 89.9, azimuth: 0, au: 32, mult: 1.35 },
-    edge: { elevation: 1.5, azimuth: 0, au: 32, mult: 1.5 }
+    full: { elevation: 45, azimuth: 0, au: 42, mult: 1.55 },
+    top: { elevation: 89.9, azimuth: 0, au: 42, mult: 1.35 },
+    edge: { elevation: 1.5, azimuth: 0, au: 42, mult: 1.5 }
   };
 
   // ---------------------------------------------------------------------------
@@ -341,6 +341,10 @@
       optOrbits: $('opt-orbits'),
       optLabels: $('opt-labels'),
       optBelt: $('opt-belt'),
+      optKuiper: $('opt-kuiper'),
+      optPlutoPanel: $('opt-pluto-panel'),
+      btnInfoHelp: $('btn-info-help'),
+      infoFineprint: $('info-fineprint'),
       optMilkyWay: $('opt-milkyway'),
       optBloom: $('opt-bloom'),
       bloomStrength: $('bloom-strength'),
@@ -371,6 +375,7 @@
       showOrbits: true,
       showLabels: true,
       showBelt: true,
+      showKuiper: true,
       showMilkyWay: true,
       showPluto: true,
       showMoon: true,
@@ -391,7 +396,10 @@
     window.__orrery = {
       subsolar: () => (typeof Eph.subsolarPoint === 'function' ? Eph.subsolarPoint(state.jd) : null),
       libration: () => (typeof Eph.moonLibration === 'function' ? Eph.moonLibration(state.jd) : null),
-      jd: () => state.jd
+      jd: () => state.jd,
+      precision: () => ({ enabled: precision.enabled, checked: precision.checked, inflight: precision.inflight,
+        lastFetchAt: precision.lastFetchAt, lastRequestedJd: precision.lastRequestedJd, hasExact: !!precision.exact,
+        playing: state.playing, speedIndex: state.speedIndex })
     };
 
     const precision = {
@@ -516,9 +524,25 @@
     }
     window.addEventListener('resize', onResize);
 
+    // Keep the positions panel clear of the time controls, whose height changes
+    // as the date form wraps at different widths (the CSS default is a guess).
+    const controlsEl = document.getElementById('controls');
+    if (controlsEl && typeof ResizeObserver !== 'undefined') {
+      const updateControlsHeight = () => {
+        // Distance from the controls' top edge to the window bottom, so the
+        // panel's 20 px gap holds whatever the controls' own bottom offset is.
+        const h = Math.round(window.innerHeight - controlsEl.getBoundingClientRect().top);
+        if (h > 0 && h < window.innerHeight) document.documentElement.style.setProperty('--controls-h', h + 'px');
+      };
+      const controlsObserver = new ResizeObserver(updateControlsHeight);
+      controlsObserver.observe(controlsEl);
+      window.addEventListener('resize', updateControlsHeight);
+      updateControlsHeight();
+    }
+
     // ---- Sky -------------------------------------------------------------------
 
-    const sky = { stars: null, milkyWay: null, belt: null };
+    const sky = { stars: null, milkyWay: null, belt: null, kuiper: null };
 
     function fallbackStarfield() {
       const count = 6000;
@@ -592,6 +616,24 @@
         sky.belt.name = 'asteroid-belt';
         sky.belt.visible = state.showBelt;
         scene.add(sky.belt);
+      }
+    }
+
+    // Kuiper belt, 30 to 50 AU, sampled in AU and mapped through the current
+    // distance mapping so it sits correctly in both compressed and true scale.
+    function buildKuiperBelt() {
+      if (sky.kuiper) {
+        scene.remove(sky.kuiper);
+        if (sky.kuiper.geometry) sky.kuiper.geometry.dispose();
+        if (sky.kuiper.material) sky.kuiper.material.dispose();
+        sky.kuiper = null;
+      }
+      const mapRadius = (au) => mapDistance(au);
+      sky.kuiper = visualsCall('kuiperBelt', [30, 50, 9000, mapRadius], () => fallbackBelt(mapDistance(39), mapDistance(48), 6000));
+      if (sky.kuiper) {
+        sky.kuiper.name = 'kuiper-belt';
+        sky.kuiper.visible = state.showKuiper;
+        scene.add(sky.kuiper);
       }
     }
 
@@ -921,6 +963,17 @@
         const r = bodyRadius('sun');
         sun.corona.scale.set(2.6 * 2 * r, 2.6 * 2 * r, 1);
       }
+    }
+
+    // Pluto can be switched from the settings popover or the Positions panel;
+    // both switches, the scene, the orbit and the panel row follow one state.
+    function setShowPluto(on) {
+      state.showPluto = !!on;
+      if (dom.optPluto) dom.optPluto.checked = state.showPluto;
+      if (dom.optPlutoPanel) dom.optPlutoPanel.checked = state.showPluto;
+      if (rowByName.pluto) rowByName.pluto.hidden = !state.showPluto;
+      applyBodyVisibility();
+      applyOrbitVisibility();
     }
 
     function applyBodyVisibility() {
@@ -1499,7 +1552,9 @@
     }
 
     function maintainPrecision(now) {
-      if (!precision.enabled || precision.inflight) return;
+      // Nothing is requested until the /api/range probe has answered; otherwise
+      // the paused path would record the date as requested and never retry it.
+      if (!precision.enabled || !precision.checked || precision.inflight) return;
       const dps = SPEEDS[state.speedIndex].daysPerSec;
       const slow = !state.playing || dps <= 1;
       if (!slow) return;
@@ -1513,16 +1568,25 @@
       }
     }
 
-    async function probeBackend() {
+    // A 404 means static hosting (no backend): give up at once. Anything else
+    // (server restarting, kernel still loading) is retried a few times before
+    // precision mode is switched off for the session.
+    async function probeBackend(attempt) {
       if (!precision.enabled) return;
+      attempt = attempt || 0;
       try {
         const res = await fetch('api/range', { cache: 'no-store' });
-        if (!res.ok) { disablePrecision('no /api/range (HTTP ' + res.status + ')'); return; }
+        if (res.status === 404) { disablePrecision('no /api/range (HTTP 404)'); return; }
+        if (!res.ok) throw new Error('HTTP ' + res.status);
         const data = await res.json();
         if (data && data.ephemeris) precision.ephemeris = data.ephemeris;
         precision.checked = true;
       } catch (err) {
-        disablePrecision('backend unreachable');
+        if (attempt < 3 && location.protocol !== 'file:') {
+          setTimeout(() => probeBackend(attempt + 1), 1500 * (attempt + 1));
+          return;
+        }
+        disablePrecision('backend unreachable (' + (err && err.message ? err.message : err) + ')');
       }
     }
 
@@ -2438,6 +2502,12 @@
       dom.optOrbits.addEventListener('change', () => { state.showOrbits = dom.optOrbits.checked; applyOrbitVisibility(); });
       dom.optLabels.addEventListener('change', () => { state.showLabels = dom.optLabels.checked; dom.labels.classList.toggle('off', !state.showLabels); });
       dom.optBelt.addEventListener('change', () => { state.showBelt = dom.optBelt.checked; if (sky.belt) sky.belt.visible = state.showBelt; });
+      dom.optKuiper.addEventListener('change', () => { state.showKuiper = dom.optKuiper.checked; if (sky.kuiper) sky.kuiper.visible = state.showKuiper; });
+      dom.btnInfoHelp.addEventListener('click', () => {
+        const open = dom.infoFineprint.hidden;
+        dom.infoFineprint.hidden = !open;
+        dom.btnInfoHelp.setAttribute('aria-expanded', open ? 'true' : 'false');
+      });
       dom.optMilkyWay.addEventListener('change', () => { state.showMilkyWay = dom.optMilkyWay.checked; if (sky.milkyWay) sky.milkyWay.visible = state.showMilkyWay; });
       dom.optBloom.addEventListener('change', () => { bloomPass.enabled = dom.optBloom.checked; });
       dom.bloomStrength.addEventListener('input', () => { bloomPass.strength = parseFloat(dom.bloomStrength.value); });
@@ -2445,6 +2515,7 @@
         state.trueScale = dom.optTrueScale.checked;
         updateOrbits(true);
         buildBelt();
+        buildKuiperBelt();
         if (!state.focus) applyPreset('default', 900);
       });
       dom.optTrueSize.addEventListener('change', () => {
@@ -2454,7 +2525,8 @@
         invalidateMoonOrbits();
         if (state.focus) setFocus(state.focus);
       });
-      dom.optPluto.addEventListener('change', () => { state.showPluto = dom.optPluto.checked; applyBodyVisibility(); applyOrbitVisibility(); });
+      dom.optPluto.addEventListener('change', () => setShowPluto(dom.optPluto.checked));
+      dom.optPlutoPanel.addEventListener('change', () => setShowPluto(dom.optPlutoPanel.checked));
       dom.optMoon.addEventListener('change', () => { state.showMoon = dom.optMoon.checked; applyBodyVisibility(); });
       if (dom.optPlanetMoons) {
         dom.optPlanetMoons.addEventListener('change', () => { state.showPlanetMoons = dom.optPlanetMoons.checked; applyBodyVisibility(); });
@@ -2476,12 +2548,14 @@
       dom.optOrbits.checked = state.showOrbits;
       dom.optLabels.checked = state.showLabels;
       dom.optBelt.checked = state.showBelt;
+      dom.optKuiper.checked = state.showKuiper;
       dom.optMilkyWay.checked = state.showMilkyWay;
       dom.optBloom.checked = true;
       dom.bloomStrength.value = String(bloomPass.strength);
       dom.optTrueScale.checked = state.trueScale;
       dom.optTrueSize.checked = state.trueSize;
       dom.optPluto.checked = state.showPluto;
+      dom.optPlutoPanel.checked = state.showPluto;
       dom.optMoon.checked = state.showMoon;
       if (dom.optPlanetMoons) {
         dom.optPlanetMoons.checked = state.showPlanetMoons;
@@ -2779,6 +2853,7 @@
       for (const name of PLANETS) buildOrbit(name);
       updateOrbits(true);
       buildBelt();
+      buildKuiperBelt();
       buildLabels();
       done++;
 

@@ -1676,6 +1676,47 @@
     return points;
   }
 
+  /* Kuiper belt: a broad, puffy annulus of icy bodies. Radii are sampled in AU
+   * from a profile peaking in the classical belt (42-48 AU), with the plutino
+   * population near 39.4 AU, a sparse inner scattered region and a thin tail
+   * outward, then mapped to scene units by the caller's mapRadius(au) so the
+   * belt follows whatever distance compression the scene uses. Inclinations
+   * are larger than the asteroid belt's, so the thickness grows with radius. */
+  function kuiperBelt(innerAu, outerAu, count, mapRadius) {
+    var T = requireThree();
+    innerAu = innerAu || 30; outerAu = outerAu || 50; count = count || 9000;
+    var rng = mulberry32(777);
+    var pos = new Float32Array(count * 3);
+    var col = new Float32Array(count * 3);
+    var i, t, au, r, a, inc, g;
+    for (i = 0; i < count; i++) {
+      t = rng();
+      if (t < 0.62) au = 42 + 6 * (0.5 + (rng() + rng() + rng() - 1.5) / 2.2);
+      else if (t < 0.80) au = 39.4 + (rng() + rng() - 1) * 1.6;
+      else if (t < 0.92) au = innerAu + (42 - innerAu) * rng();
+      else au = 48 + (outerAu - 48) * Math.pow(rng(), 0.7);
+      au = clamp(au, innerAu, outerAu);
+      r = mapRadius ? mapRadius(au) : au;
+      a = rng() * TAU;
+      inc = (rng() + rng() + rng() - 1.5) / 1.5 * 0.22;
+      pos[i * 3] = Math.cos(a) * r;
+      pos[i * 3 + 1] = r * Math.tan(inc) * 0.6;
+      pos[i * 3 + 2] = -Math.sin(a) * r;
+      g = 0.55 + rng() * 0.45;
+      col[i * 3] = 0.66 * g; col[i * 3 + 1] = 0.72 * g; col[i * 3 + 2] = 0.86 * g;
+    }
+    var geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
+    geo.setAttribute('color', new T.BufferAttribute(col, 3));
+    var mat = new T.PointsMaterial({
+      vertexColors: true, size: 1.3, sizeAttenuation: false,
+      transparent: true, opacity: 0.38, depthWrite: false
+    });
+    var points = new T.Points(geo, mat);
+    points.name = 'kuiperBelt';
+    return points;
+  }
+
   /* ------------------------------------------------------------------ */
   /* Public API                                                          */
   /* ------------------------------------------------------------------ */
@@ -1716,6 +1757,7 @@
     starfield: starfield,
     milkyWay: milkyWay,
     asteroidBelt: asteroidBelt,
+    kuiperBelt: kuiperBelt,
     PLANET_STYLE: PLANET_STYLE,
     ATMOSPHERE: ATMOSPHERE,
     DEFAULT_SIZE: DEFAULT_SIZE,
