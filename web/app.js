@@ -28,7 +28,8 @@
   const TWO_PI = Math.PI * 2;
 
   const PLANETS = ['mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto'];
-  const INFO_BODIES = PLANETS.concat(['moon']);
+  // Positions panel order: the Moon sits directly under Earth.
+  const INFO_BODIES = PLANETS.flatMap((p) => (p === 'earth' ? [p, 'moon'] : [p]));
   const SCENE_BODIES = ['sun'].concat(PLANETS, ['moon']);
 
   const DISPLAY_NAME = {
