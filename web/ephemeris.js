@@ -20,6 +20,9 @@
  *             for the Greenwich meridian. Nutation is ignored.
  *   Moon rot.: IAU WGCCRE 2009 lunar rotation model (Archinal et al. 2011),
  *             mean Earth / polar axis frame, physical libration included.
+ *   Zodiac  : geocentric tropical longitudes (equinox of date) from the same
+ *             IAU 2006 mean equinox; geocentric(), tropicalLongitude(),
+ *             zodiacSign().
  *
  * Frame: heliocentric ecliptic J2000, right-handed, AU. x toward the vernal
  * equinox, z toward ecliptic north. Longitudes in [0, 360) degrees.
@@ -834,6 +837,88 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Geocentric positions and the tropical zodiac
+  //
+  // Astrology reads a body's longitude along the ecliptic from the equinox OF
+  // DATE as seen from Earth (the geocentric tropical zodiac): Aries is 0-30
+  // deg, Taurus 30-60, ..., Pisces 330-360, increasing eastward, i.e.
+  // counterclockwise seen from ecliptic north. The mean equinox of date comes
+  // from earthOrientation; its J2000 ecliptic longitude is 0 at J2000 and
+  // regresses by the general precession (about -0.36 deg in 2026, -14 deg in
+  // 3000), so the tropical longitude is the J2000 longitude minus that angle.
+  // Longitudes are measured along the J2000 ecliptic rather than the ecliptic
+  // of date (the two planes differ by under 0.13 deg within the app's range,
+  // which only matters at high ecliptic latitude), and nutation (< 0.005 deg)
+  // is ignored.
+  // ---------------------------------------------------------------------------
+
+  var ZODIAC_SIGNS = [
+    { name: 'Aries', glyph: '\u2648' },
+    { name: 'Taurus', glyph: '\u2649' },
+    { name: 'Gemini', glyph: '\u264A' },
+    { name: 'Cancer', glyph: '\u264B' },
+    { name: 'Leo', glyph: '\u264C' },
+    { name: 'Virgo', glyph: '\u264D' },
+    { name: 'Libra', glyph: '\u264E' },
+    { name: 'Scorpio', glyph: '\u264F' },
+    { name: 'Sagittarius', glyph: '\u2650' },
+    { name: 'Capricorn', glyph: '\u2651' },
+    { name: 'Aquarius', glyph: '\u2652' },
+    { name: 'Pisces', glyph: '\u2653' }
+  ];
+
+  // J2000 ecliptic longitude of the mean equinox of date, degrees in
+  // (-180, 180]: 0 at J2000, negative and growing in magnitude afterwards.
+  // Memoised on the last jd: the browser asks for it once per frame for the
+  // zodiac disc and then once per body per panel refresh (tropicalLongitude
+  // for each planet and the Moon) at the same instant, and earthOrientation
+  // re-evaluates the precession polynomials, delta T and GMST on every call.
+  var equinoxCacheJd = NaN;
+  var equinoxCacheDeg = 0;
+  function equinoxLongitude(jd) {
+    var jdUT = toNumber(jd, 'jd');
+    if (jdUT !== equinoxCacheJd) {
+      var q = earthOrientation(jdUT).equinox;
+      equinoxCacheDeg = Math.atan2(q.y, q.x) * RAD;
+      equinoxCacheJd = jdUT;
+    }
+    return equinoxCacheDeg;
+  }
+
+  // Tropical (equinox of date) longitude in [0, 360) of a direction given by
+  // its J2000 ecliptic longitude in degrees.
+  function tropicalLongitude(lonJ2000Deg, jd) {
+    return wrap360(toNumber(lonJ2000Deg, 'lonJ2000Deg') - equinoxLongitude(jd));
+  }
+
+  // Geocentric ecliptic J2000 vector, AU, with lon in [0, 360): the Sun
+  // (-Earth), the Moon (moonGeocentric) or any planet other than Earth.
+  function geocentric(body, jd) {
+    var jdUT = toNumber(jd, 'jd');
+    if (body === 'moon') {
+      return moonGeocentric(jdUT);
+    }
+    if (body === 'earth') {
+      throw new Error('geocentric: "earth" has no geocentric position; use sun, moon or another planet');
+    }
+    var e = heliocentric('earth', jdUT);
+    if (body === 'sun') {
+      return spherical(-e.x, -e.y, -e.z);
+    }
+    var p = heliocentric(body, jdUT);
+    return spherical(p.x - e.x, p.y - e.y, p.z - e.z);
+  }
+
+  // Sign containing a tropical longitude: { index 0-11, name, glyph, degrees }
+  // with degrees the position within the sign in [0, 30).
+  function zodiacSign(tropicalLonDeg) {
+    var l = wrap360(toNumber(tropicalLonDeg, 'tropicalLonDeg'));
+    var index = Math.min(11, Math.floor(l / 30));
+    var sign = ZODIAC_SIGNS[index];
+    return { index: index, name: sign.name, glyph: sign.glyph, degrees: l - index * 30 };
+  }
+
+  // ---------------------------------------------------------------------------
   // Convenience
   // ---------------------------------------------------------------------------
 
@@ -876,6 +961,11 @@
     subsolarPoint: subsolarPoint,
     moonOrientation: moonOrientation,
     moonLibration: moonLibration,
+    equinoxLongitude: equinoxLongitude,
+    tropicalLongitude: tropicalLongitude,
+    geocentric: geocentric,
+    zodiacSign: zodiacSign,
+    ZODIAC: ZODIAC_SIGNS,
     range: range,
     elementSet: elementSet,
     J2000: J2000,

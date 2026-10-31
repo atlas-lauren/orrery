@@ -15,7 +15,12 @@
  * textures/) and is turned with Ephemeris.moonOrientation (IAU rotation model).
  * The asteroid and Kuiper belts are populations of real orbits propagated on the
  * GPU (OrreryVisuals.orbitalBelt): the app only feeds them the time, the reference
- * planet's mean longitude and the distance mapping each frame.
+ * planet's mean longitude and the distance mapping each frame. The optional zodiac
+ * overlay (OrreryVisuals.zodiacDisc) is a disc of twelve sectors centred on Earth,
+ * turned to the mean equinox of date from Ephemeris.equinoxLongitude, with a marker
+ * on the disc for each body's direction as seen from Earth (the compressed distance
+ * mapping does not preserve those directions for the drawn planets); while it is on,
+ * the Positions panel shows geocentric tropical longitudes.
  *
  * Sections: constants, calendar helpers, startOrrery (state, moon catalogue, scene
  * setup, bodies, orbits, moon systems, precision mode, camera, UI, frame loop).
@@ -125,6 +130,9 @@
   const FALLBACK_COLOR = 0xb0aca6;
 
   const ZODIAC = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
+  // Sign glyphs U+2648 .. U+2653 in ZODIAC order; used when visuals.js supplies no
+  // OrreryVisuals.ZODIAC table.
+  const ZODIAC_GLYPHS = ['\u2648', '\u2649', '\u264A', '\u264B', '\u264C', '\u264D', '\u264E', '\u264F', '\u2650', '\u2651', '\u2652', '\u2653'];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -346,6 +354,9 @@
       optBelt: $('opt-belt'),
       optKuiper: $('opt-kuiper'),
       optPlutoPanel: $('opt-pluto-panel'),
+      optZodiac: $('opt-zodiac'),
+      optZodiacPanel: $('opt-zodiac-panel'),
+      zodiacBadge: $('zodiac-badge'),
       btnInfoHelp: $('btn-info-help'),
       infoFineprint: $('info-fineprint'),
       optMilkyWay: $('opt-milkyway'),
@@ -383,6 +394,7 @@
       showPluto: true,
       showMoon: true,
       showPlanetMoons: true,
+      zodiac: false,           // tropical zodiac overlay; the panel then shows geocentric signs
       focus: null,             // body name being followed, or null for the Sun
       hover: null,             // body name under the pointer
       lastJdChangeAt: 0,       // performance.now() of the last jd change
@@ -400,6 +412,9 @@
       subsolar: () => (typeof Eph.subsolarPoint === 'function' ? Eph.subsolarPoint(state.jd) : null),
       libration: () => (typeof Eph.moonLibration === 'function' ? Eph.moonLibration(state.jd) : null),
       jd: () => state.jd,
+      zodiac: () => ({ on: state.zodiac, equinoxDeg: zodiac.equinoxDeg, radius: zodiac.radius, disc: !!zodiac.mesh,
+        ariesRad: zodiac.uniforms ? zodiac.uniforms.uAries.value : NaN,
+        markers: zodiac.markers.map((m) => ({ name: m.name, shown: m.shown, tropicalDeg: m.tropicalDeg })) }),
       precision: () => ({ enabled: precision.enabled, checked: precision.checked, inflight: precision.inflight,
         lastFetchAt: precision.lastFetchAt, lastRequestedJd: precision.lastRequestedJd, hasExact: !!precision.exact,
         playing: state.playing, speedIndex: state.speedIndex })
@@ -1425,6 +1440,267 @@
       }
     }
 
+    // ---- Zodiac overlay ----------------------------------------------------------------
+    //
+    // Twelve 30-degree sectors radiating from Earth in the ecliptic plane: the
+    // geocentric tropical zodiac. 0 deg Aries points at the mean equinox of date,
+    // whose J2000 ecliptic longitude Ephemeris.equinoxLongitude gives (0 at J2000,
+    // regressing about 1.4 deg per century). The disc comes from
+    // OrreryVisuals.zodiacDisc with the sectors drawn in its fragment shader, so per
+    // frame the app only moves it to Earth and sets the uAries uniform; the sign
+    // labels are HTML like the body labels and are placed with them (see Labels).
+    // Without zodiacDisc the markers, the labels and the panel figures still work.
+    //
+    // Body markers: the compressed distance mapping (mapDistance, 22 r^0.6) is radial
+    // about the SUN, so it does not preserve directions from Earth: a planet's drawn
+    // Earth-to-planet direction is off by up to about 14 deg (Mercury, Venus, Mars)
+    // and the planet can be drawn in the wrong sector while the panel says otherwise.
+    // So each body also gets a dot on the disc, with a ray from Earth, at its true
+    // geocentric ecliptic longitude; the dots are the reading, the globes the scenery.
+    // (True scale is linear, and the Sun's and the Moon's drawn directions are exact
+    // in both mappings.)
+
+    // Disc radius in AU. The disc is centred on Earth, so Pluto's distance FROM EARTH
+    // matters: it reaches 48.8 AU near aphelion (2110s). The shader fades the rim from
+    // 0.82 of the radius, i.e. from 45 AU, so Pluto never leaves the lit part of the disc.
+    const ZODIAC_RADIUS_AU = 55;
+    const ZODIAC_LABEL_FRACTION = 0.9;    // sign labels sit at this fraction of the disc radius
+    const ZODIAC_MARKER_FRACTION = 0.8;   // body markers sit at this fraction (about Pluto's drawn orbit)
+    const ZODIAC_MARKER_PX = 4;           // screen radius of a marker dot, for the tag placement
+    // Bodies with a geocentric marker, in Positions-panel order (Earth is the centre).
+    const ZODIAC_MARKER_BODIES = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto'];
+    const zodiac = {
+      mesh: null, uniforms: null, radius: 0, equinoxDeg: 0, lastJd: NaN, labels: [], warned: false,
+      rays: null,   // LineSegments, one segment per marker from Earth to the dot
+      // Marker records carry the same label fields as the bodies (label, labelBox,
+      // labelSlot, screen) so the label placement pass treats their tags alike.
+      markers: ZODIAC_MARKER_BODIES.map((name) => ({
+        name, sprite: null, shown: false, tropicalDeg: NaN, world: new THREE.Vector3(), label: null,
+        labelBox: { w: 0, h: 0 }, labelSlot: { dir: 0, ring: 0 },
+        screen: { x: 0, y: 0, r: 0, visible: false, inView: false }
+      }))
+    };
+    const hasEquinoxLongitude = typeof Eph.equinoxLongitude === 'function';
+    const hasTropicalLongitude = typeof Eph.tropicalLongitude === 'function';
+
+    // Sign names and glyphs in order, from visuals.js when it supplies a full table.
+    const ZODIAC_SIGNS = (function () {
+      const table = Vis && Array.isArray(Vis.ZODIAC) ? Vis.ZODIAC : null;
+      const ok = !!table && table.length === 12
+        && table.every((s) => s && typeof s.name === 'string' && typeof s.glyph === 'string');
+      return ZODIAC.map((name, i) => ({ name: ok ? table[i].name : name, glyph: ok ? table[i].glyph : ZODIAC_GLYPHS[i] }));
+    })();
+
+    function warnZodiac(message, err) {
+      if (zodiac.warned) return;
+      zodiac.warned = true;
+      if (err) console.warn(message, err); else console.warn(message);
+    }
+
+    function zodiacUniforms(mesh) {
+      const u = mesh && mesh.material && mesh.material.uniforms;
+      return u && u.uAries && u.uRadius ? u : null;
+    }
+
+    function disposeZodiacDisc() {
+      const mesh = zodiac.mesh;
+      if (!mesh) return;
+      scene.remove(mesh);
+      if (mesh.geometry) mesh.geometry.dispose();
+      if (mesh.material) mesh.material.dispose();
+      zodiac.mesh = null;
+      zodiac.uniforms = null;
+    }
+
+    // (Re)builds the disc for the current distance mapping: at boot and whenever the
+    // true-scale toggle changes mapDistance.
+    function buildZodiacDisc() {
+      disposeZodiacDisc();
+      zodiac.radius = mapDistance(ZODIAC_RADIUS_AU);
+      zodiac.lastJd = NaN;
+      if (!Vis || typeof Vis.zodiacDisc !== 'function') {
+        warnZodiac('OrreryVisuals.zodiacDisc is not available; the zodiac overlay shows sign labels only');
+        return;
+      }
+      let mesh = null;
+      try {
+        mesh = Vis.zodiacDisc(zodiac.radius);
+        if (!mesh || !zodiacUniforms(mesh)) throw new Error('zodiacDisc returned no Mesh with the uAries / uRadius uniforms');
+      } catch (err) {
+        if (mesh) {
+          if (mesh.geometry) mesh.geometry.dispose();
+          if (mesh.material) mesh.material.dispose();
+        }
+        warnZodiac('OrreryVisuals.zodiacDisc failed; the zodiac overlay shows sign labels only', err);
+        return;
+      }
+      mesh.name = 'zodiac';
+      mesh.renderOrder = -1;          // beneath the orbit lines and the belts
+      mesh.frustumCulled = false;     // one draw call, and the camera is usually inside its bounds
+      mesh.visible = state.zodiac;
+      zodiac.mesh = mesh;
+      zodiac.uniforms = zodiacUniforms(mesh);
+      zodiac.uniforms.uRadius.value = zodiac.radius;
+      scene.add(mesh);
+      updateZodiac(state.jd);
+    }
+
+    // One sprite per marker body in the body's accent colour (sharing the body's
+    // true-size marker texture where there is one) and one LineSegments of rays from
+    // Earth to the dots, coloured per segment. Built once after the bodies: the
+    // positions are refreshed every frame from zodiac.radius, so the true-scale
+    // toggle needs no rebuild here. Independent of zodiacDisc.
+    function buildZodiacMarkers() {
+      const n = zodiac.markers.length;
+      const rayPos = new Float32Array(n * 6);
+      const rayCol = new Float32Array(n * 6);
+      const color = new THREE.Color();
+      for (let i = 0; i < n; i++) {
+        const m = zodiac.markers[i];
+        const rec = bodies[m.name];
+        const accent = rec ? rec.accent : accentOf(m.name);
+        const map = rec && rec.marker && rec.marker.material && rec.marker.material.map
+          ? rec.marker.material.map : makeMarkerTexture(accent);
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+          map, sizeAttenuation: false, depthTest: false, depthWrite: false, transparent: true, opacity: 0.85
+        }));
+        sprite.scale.set(0.016, 0.016, 1);
+        sprite.renderOrder = 6;             // above the bodies' own true-size markers (5)
+        sprite.visible = false;
+        sprite.name = 'zodiac-marker-' + m.name;
+        scene.add(sprite);
+        m.sprite = sprite;
+        color.setHex(accent);
+        for (let k = 0; k < 2; k++) {
+          const o = i * 6 + k * 3;
+          rayCol[o] = color.r; rayCol[o + 1] = color.g; rayCol[o + 2] = color.b;
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(rayPos, 3).setUsage(THREE.DynamicDrawUsage));
+      geo.setAttribute('color', new THREE.BufferAttribute(rayCol, 3));
+      const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.3, depthWrite: false });
+      const rays = new THREE.LineSegments(geo, mat);
+      rays.name = 'zodiacRays';
+      rays.frustumCulled = false;   // the camera is usually inside its bounds
+      rays.visible = false;         // shown by updateZodiacMarkers once it holds positions
+      scene.add(rays);
+      zodiac.rays = rays;
+    }
+
+    // J2000 ecliptic longitude of 0 deg Aries (the mean equinox of date), degrees,
+    // cached per jd. Without Ephemeris.equinoxLongitude the J2000 equinox stands in.
+    function equinoxOfDate(jd) {
+      if (jd === zodiac.lastJd) return zodiac.equinoxDeg;
+      zodiac.lastJd = jd;
+      zodiac.equinoxDeg = 0;
+      if (hasEquinoxLongitude) {
+        try {
+          const e = Eph.equinoxLongitude(jd);
+          if (Number.isFinite(e)) zodiac.equinoxDeg = e;
+        } catch (err) {
+          warnZodiac('Ephemeris.equinoxLongitude failed; zodiac signs are measured from the J2000 equinox', err);
+        }
+      }
+      return zodiac.equinoxDeg;
+    }
+
+    // Tropical longitude in [0, 360) of a J2000 ecliptic longitude, degrees.
+    function tropicalOf(lonJ2000, jd) {
+      if (hasTropicalLongitude) return Eph.tropicalLongitude(lonJ2000, jd);
+      return wrapLon(lonJ2000 - equinoxOfDate(jd));
+    }
+
+    function wrapLon(deg) {
+      let l = deg % 360;
+      if (l < 0) l += 360;
+      return l;
+    }
+
+    // Per frame, after updateBodies: the disc follows Earth, 0 deg Aries follows the
+    // equinox of date and the body markers follow the geocentric directions in
+    // positions (the frame's positions object; omitted when called outside the frame
+    // loop, and the next frame catches up). Allocation-free.
+    function updateZodiac(jd, positions) {
+      if (!state.zodiac) return;
+      const eq = equinoxOfDate(jd);
+      const earth = bodies.earth;
+      if (!earth) return;
+      const earthPos = earth.group.position;   // Earth's group is a direct child of the scene
+      if (zodiac.mesh) {
+        zodiac.mesh.position.copy(earthPos);
+        zodiac.uniforms.uAries.value = eq * DEG;
+      }
+      if (positions) updateZodiacMarkers(positions, earthPos, eq);
+    }
+
+    // Marker i sits at Earth + ZODIAC_MARKER_FRACTION * radius along the body's
+    // geocentric ecliptic longitude a (J2000; scene direction (cos a, 0, -sin a), the
+    // same angle the disc shader sectors), and its ray runs from Earth to it. The
+    // geocentric vectors come from the frame's heliocentric positions: Sun = -Earth,
+    // Moon as given (already geocentric), planet - Earth; the latitude is dropped,
+    // as the zodiac measures longitude along the ecliptic. A marker without data, or
+    // Pluto's while Pluto is switched off, is hidden and its ray collapsed to a point.
+    function updateZodiacMarkers(positions, earthPos, eq) {
+      const b = positions.bodies;
+      const e = b.earth;
+      const r = zodiac.radius * ZODIAC_MARKER_FRACTION;
+      const rayAttr = zodiac.rays ? zodiac.rays.geometry.attributes.position : null;
+      const ray = rayAttr ? rayAttr.array : null;
+      for (let i = 0; i < zodiac.markers.length; i++) {
+        const m = zodiac.markers[i];
+        let gx = 0, gy = 0, has = !!e;
+        if (has) {
+          if (m.name === 'sun') { gx = -e.x; gy = -e.y; }
+          else if (m.name === 'moon') { const mo = b.moon; has = !!mo; if (has) { gx = mo.x; gy = mo.y; } }
+          else { const p = b[m.name]; has = !!p; if (has) { gx = p.x - e.x; gy = p.y - e.y; } }
+        }
+        const shown = has && (m.name !== 'pluto' || state.showPluto);
+        m.shown = shown;
+        if (shown) {
+          const a = Math.atan2(gy, gx);
+          m.tropicalDeg = wrapLon(a / DEG - eq);
+          m.world.set(earthPos.x + r * Math.cos(a), earthPos.y, earthPos.z - r * Math.sin(a));
+          if (m.sprite) m.sprite.position.copy(m.world);
+        } else {
+          m.tropicalDeg = NaN;
+        }
+        if (m.sprite) m.sprite.visible = shown;
+        if (ray) {
+          const o = i * 6;
+          ray[o] = earthPos.x; ray[o + 1] = earthPos.y; ray[o + 2] = earthPos.z;
+          if (shown) { ray[o + 3] = m.world.x; ray[o + 4] = m.world.y; ray[o + 5] = m.world.z; }
+          else { ray[o + 3] = earthPos.x; ray[o + 4] = earthPos.y; ray[o + 5] = earthPos.z; }
+        }
+      }
+      if (rayAttr) {
+        rayAttr.needsUpdate = true;
+        zodiac.rays.visible = true;
+      }
+    }
+
+    // Zodiac can be switched from the settings popover, the Positions panel header
+    // or the Z key; both switches, the disc, the labels and the panel follow one state.
+    function setZodiac(on) {
+      state.zodiac = !!on;
+      if (dom.optZodiac) dom.optZodiac.checked = state.zodiac;
+      if (dom.optZodiacPanel) dom.optZodiacPanel.checked = state.zodiac;
+      if (zodiac.mesh) zodiac.mesh.visible = state.zodiac;
+      if (dom.zodiacBadge) dom.zodiacBadge.hidden = !state.zodiac;
+      if (!state.zodiac) {
+        for (const z of zodiac.labels) z.label.style.display = 'none';
+        for (const m of zodiac.markers) {
+          m.shown = false;
+          if (m.sprite) m.sprite.visible = false;
+          if (m.label) m.label.style.display = 'none';
+        }
+        if (zodiac.rays) zodiac.rays.visible = false;   // shown again by the next frame's marker update
+      }
+      zodiac.lastJd = NaN;
+      updateZodiac(state.jd);
+      state.lastInfoUpdate = 0;   // the panel swaps heliocentric and geocentric figures at once
+    }
+
     // ---- Moon systems -------------------------------------------------------------------
     //
     // The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto live in a
@@ -1983,25 +2259,111 @@
         rec.labelBox = { w: 0, h: 0 };
         rec.labelSlot = { dir: 0, ring: 0 };
       }
+      buildZodiacLabels();
+      buildZodiacMarkerLabels();
       dom.labels.classList.toggle('off', !state.showLabels);
       measureLabels();
       if (document.fonts && document.fonts.ready) document.fonts.ready.then(measureLabels);
     }
 
-    function measureLabels() {
-      for (const rec of bodyList) {
-        const el = rec.label;
-        if (!el) continue;
-        const wasHidden = el.style.display === 'none';
-        if (wasHidden) el.style.display = '';
-        rec.labelBox.w = el.offsetWidth;
-        rec.labelBox.h = el.offsetHeight;
-        if (wasHidden) el.style.display = 'none';
+    // One label per sign, glyph and name, dimmer than the body labels and not
+    // clickable; shown only while the zodiac overlay is on. Their records carry the
+    // same screen / labelBox / labelSlot fields as the bodies so the placement pass
+    // treats them alike; updateZodiacLabelPositions projects their anchors.
+    function buildZodiacLabels() {
+      zodiac.labels.length = 0;
+      for (let k = 0; k < ZODIAC_SIGNS.length; k++) {
+        const sign = ZODIAC_SIGNS[k];
+        const el = document.createElement('div');
+        el.className = 'label zodiac';
+        const glyph = document.createElement('span');
+        glyph.className = 'glyph';
+        glyph.textContent = sign.glyph;
+        el.appendChild(glyph);
+        el.appendChild(document.createTextNode(sign.name));
+        el.style.display = 'none';
+        dom.labels.appendChild(el);
+        zodiac.labels.push({
+          name: 'zodiac-' + sign.name.toLowerCase(), index: k, label: el,
+          labelBox: { w: 0, h: 0 }, labelSlot: { dir: 0, ring: 0 },
+          screen: { x: 0, y: 0, r: 0, visible: false, inView: false }
+        });
       }
+    }
+
+    // One small tag per zodiac marker with the body's name in its colour, clickable
+    // like a body label (click follows the body); shown only while the overlay is on
+    // and the marker is on screen. The marker records persist; only the element is
+    // rebuilt with the other labels.
+    function buildZodiacMarkerLabels() {
+      for (const m of zodiac.markers) {
+        const el = document.createElement('div');
+        el.className = 'label zodiac-mark';
+        const rec = bodies[m.name];
+        el.style.setProperty('--label-color', hexColor(rec ? rec.accent : accentOf(m.name)));
+        el.textContent = DISPLAY_NAME[m.name] || m.name;
+        el.style.display = 'none';
+        el.addEventListener('click', (ev) => { ev.stopPropagation(); setFocus(m.name === 'sun' ? null : m.name); });
+        dom.labels.appendChild(el);
+        m.label = el;
+        m.labelBox.w = 0; m.labelBox.h = 0;
+      }
+    }
+
+    function measureLabelBox(rec) {
+      const el = rec.label;
+      if (!el) return;
+      const wasHidden = el.style.display === 'none';
+      if (wasHidden) el.style.display = '';
+      rec.labelBox.w = el.offsetWidth;
+      rec.labelBox.h = el.offsetHeight;
+      if (wasHidden) el.style.display = 'none';
+    }
+
+    function measureLabels() {
+      for (const rec of bodyList) measureLabelBox(rec);
+      for (const z of zodiac.labels) measureLabelBox(z);
+      for (const m of zodiac.markers) measureLabelBox(m);
     }
 
     const projV = new THREE.Vector3();
     const worldV = new THREE.Vector3();
+    const zodiacAnchor = new THREE.Vector3();
+
+    // Projects the sign label anchors, Earth + 0.9 radius toward the middle of each
+    // sector (ecliptic longitude a is the scene direction (cos a, 0, -sin a)), and
+    // the body markers' world positions; run after updateScreenPositions so the
+    // camera matrices are current. Anchors behind the camera or well outside the
+    // viewport are marked not visible.
+    function updateZodiacLabelPositions() {
+      if (!state.zodiac || !bodies.earth) return;
+      const w = renderer.domElement.clientWidth;
+      const h = renderer.domElement.clientHeight;
+      const earthPos = bodies.earth.group.position;
+      const r = zodiac.radius * ZODIAC_LABEL_FRACTION;
+      const eq = equinoxOfDate(state.jd);
+      for (let k = 0; k < zodiac.labels.length; k++) {
+        const z = zodiac.labels[k];
+        const a = (eq + 15 + 30 * k) * DEG;
+        zodiacAnchor.set(earthPos.x + r * Math.cos(a), earthPos.y, earthPos.z - r * Math.sin(a));
+        projV.copy(zodiacAnchor).project(camera);
+        const s = z.screen;
+        s.inView = projV.z < 1 && projV.z > -1 && Math.abs(projV.x) < 1.3 && Math.abs(projV.y) < 1.3;
+        s.visible = s.inView;
+        s.x = (projV.x * 0.5 + 0.5) * w;
+        s.y = (-projV.y * 0.5 + 0.5) * h;
+      }
+      for (const m of zodiac.markers) {
+        const s = m.screen;
+        if (!m.shown) { s.visible = false; s.inView = false; continue; }
+        projV.copy(m.world).project(camera);
+        s.inView = projV.z < 1 && projV.z > -1 && Math.abs(projV.x) < 1.3 && Math.abs(projV.y) < 1.3;
+        s.visible = s.inView;
+        s.x = (projV.x * 0.5 + 0.5) * w;
+        s.y = (-projV.y * 0.5 + 0.5) * h;
+        s.r = ZODIAC_MARKER_PX;
+      }
+    }
 
     function updateScreenPositions() {
       const w = renderer.domElement.clientWidth;
@@ -2045,9 +2407,9 @@
       return out;
     }
 
-    function slotFree(rec, rect, placed, w, h) {
+    function slotFree(rec, rect, w, h) {
       if (rect.x < 2 || rect.y < 2 || rect.x + rect.w > w - 2 || rect.y + rect.h > h - 2) return false;
-      for (const p of placed) if (rectsOverlap(rect, p, LABEL_MARGIN)) return false;
+      for (let i = 0; i < placedCount; i++) if (rectsOverlap(rect, placedRects[i], LABEL_MARGIN)) return false;
       for (const other of bodyList) {
         if (other === rec || !other.screen.visible) continue;
         if (rectHitsDisc(rect, other.screen.x, other.screen.y, Math.max(other.screen.r, 2) + 2)) return false;
@@ -2056,11 +2418,51 @@
     }
 
     const labelOrder = [];
-    const placedRects = [];
+    const placedRects = [];     // pooled boxes of the labels placed this frame; placedCount are in use
+    let placedCount = 0;
     const tmpRect = { x: 0, y: 0, w: 0, h: 0 };
 
     function hideLabel(rec) {
       rec.label.style.display = 'none';
+    }
+
+    function recordPlaced(rect) {
+      let p = placedRects[placedCount];
+      if (!p) { p = { x: 0, y: 0, w: 0, h: 0 }; placedRects.push(p); }
+      p.x = rect.x; p.y = rect.y; p.w = rect.w; p.h = rect.h;
+      placedCount++;
+    }
+
+    // Positions rec's label in the first free slot (its previous slot first) and
+    // returns true; with no free slot the label is hidden and false is returned,
+    // unless anchorFallback is set, when it is centred on its anchor instead (the
+    // zodiac signs are never dropped for lack of room).
+    function placeLabel(rec, w, h, anchorFallback) {
+      const slot = rec.labelSlot;
+      let found = false;
+      labelRect(rec, slot.dir, slot.ring, tmpRect);
+      if (slotFree(rec, tmpRect, w, h)) {
+        found = true;
+      } else {
+        search: for (let ring = 0; ring < LABEL_RINGS.length; ring++) {
+          for (let di = 0; di < LABEL_DIRS.length; di++) {
+            labelRect(rec, di, ring, tmpRect);
+            if (slotFree(rec, tmpRect, w, h)) { slot.dir = di; slot.ring = ring; found = true; break search; }
+          }
+        }
+      }
+      if (!found) {
+        if (!anchorFallback) { hideLabel(rec); return false; }
+        tmpRect.x = rec.screen.x - rec.labelBox.w * 0.5;
+        tmpRect.y = rec.screen.y - rec.labelBox.h * 0.5;
+        tmpRect.w = rec.labelBox.w;
+        tmpRect.h = rec.labelBox.h;
+      }
+      recordPlaced(tmpRect);
+      const el = rec.label;
+      el.style.display = '';
+      el.style.transform = 'translate(' + tmpRect.x.toFixed(1) + 'px, ' + tmpRect.y.toFixed(1) + 'px)';
+      return true;
     }
 
     function updateLabels() {
@@ -2086,27 +2488,25 @@
         if (a.isMoon !== b.isMoon) return a.isMoon ? 1 : -1;
         return b.screen.r - a.screen.r;
       });
-      placedRects.length = 0;
+      placedCount = 0;
       for (const rec of labelOrder) {
-        const slot = rec.labelSlot;
-        let found = false;
-        labelRect(rec, slot.dir, slot.ring, tmpRect);
-        if (slotFree(rec, tmpRect, placedRects, w, h)) {
-          found = true;
-        } else {
-          search: for (let ring = 0; ring < LABEL_RINGS.length; ring++) {
-            for (let di = 0; di < LABEL_DIRS.length; di++) {
-              labelRect(rec, di, ring, tmpRect);
-              if (slotFree(rec, tmpRect, placedRects, w, h)) { slot.dir = di; slot.ring = ring; found = true; break search; }
-            }
-          }
+        if (placeLabel(rec, w, h, false)) rec.label.classList.toggle('selected', state.focus === rec.name);
+      }
+      // The zodiac marker tags and the signs come last so they yield to every body.
+      // A marker tag hides when crowded (its dot still shows the direction); a sign
+      // falls back to its anchor rather than hide. Off-screen anchors are hidden.
+      if (state.zodiac) {
+        for (const m of zodiac.markers) {
+          if (!m.label) continue;
+          if (!m.screen.visible) { hideLabel(m); continue; }
+          if (m.labelBox.w === 0) measureLabels();
+          placeLabel(m, w, h, false);
         }
-        if (!found) { hideLabel(rec); continue; }
-        placedRects.push({ x: tmpRect.x, y: tmpRect.y, w: tmpRect.w, h: tmpRect.h });
-        const el = rec.label;
-        el.style.display = '';
-        el.style.transform = 'translate(' + tmpRect.x.toFixed(1) + 'px, ' + tmpRect.y.toFixed(1) + 'px)';
-        el.classList.toggle('selected', state.focus === rec.name);
+        for (const z of zodiac.labels) {
+          if (!z.screen.visible) { hideLabel(z); continue; }
+          if (z.labelBox.w === 0) measureLabels();
+          placeLabel(z, w, h, true);
+        }
       }
     }
 
@@ -2427,17 +2827,46 @@
       }
     }
 
+    // Ecliptic longitude in [0, 360) of the vector from a to b (same frame).
+    function longitudeFrom(a, b) {
+      return wrapLon(Math.atan2(b.y - a.y, b.x - a.x) / DEG);
+    }
+
+    // "<glyph> <Sign>" for a tropical longitude; signDegrees gives the degrees within.
+    function signLabel(tropicalLon) {
+      const sign = ZODIAC_SIGNS[Math.min(11, Math.floor(tropicalLon / 30))];
+      return sign.glyph + ' ' + sign.name;
+    }
+
+    function signDegrees(tropicalLon) {
+      return tropicalLon - Math.min(11, Math.floor(tropicalLon / 30)) * 30;
+    }
+
+    // In zodiac mode the longitude column shows GEOCENTRIC TROPICAL figures: each
+    // planet as seen from Earth, measured from the equinox of date; Earth's own row
+    // carries the Sun's sign (its geocentric direction is -Earth) and the Moon's
+    // sub-row its sign in place of the km figure. Otherwise the heliocentric J2000
+    // longitudes are shown as before. Geocentric vectors are differences of the
+    // frame's heliocentric positions; nothing is allocated here.
     function updateInfoPanel(positions, source) {
       const b = positions.bodies;
       const earth = b.earth;
+      const geo = state.zodiac && !!earth;
       for (const name of PLANETS) {
         const p = b[name];
         const parts = rowParts[name];
         if (!p || !parts) continue;
-        const zt = zodiacText(p.lon);
-        const sp = zt.indexOf(' ');
-        setText(parts.sign, zt.slice(0, sp));
-        setText(parts.lonVal, zt.slice(sp + 1) + '  (' + p.lon.toFixed(2) + '°)');
+        if (geo) {
+          const lonG = name === 'earth' ? wrapLon(Math.atan2(-earth.y, -earth.x) / DEG) : longitudeFrom(earth, p);
+          const trop = tropicalOf(lonG, state.jd);
+          setText(parts.sign, (name === 'earth' ? 'Sun in ' : '') + signLabel(trop));
+          setText(parts.lonVal, signDegrees(trop).toFixed(1) + '°  (' + trop.toFixed(2) + '°)');
+        } else {
+          const zt = zodiacText(p.lon);
+          const sp = zt.indexOf(' ');
+          setText(parts.sign, zt.slice(0, sp));
+          setText(parts.lonVal, zt.slice(sp + 1) + '  (' + p.lon.toFixed(2) + '°)');
+        }
         setText(parts.dSun, 'Sun ' + p.r.toFixed(3) + ' AU');
         if (name === 'earth') {
           setText(parts.dEarth, 'Earth —');
@@ -2447,8 +2876,14 @@
         }
       }
       if (b.moon && rowParts.moon) {
-        const km = b.moon.r * AU_KM;
-        setText(rowParts.moon.km, Math.round(km).toLocaleString('en-US') + ' km');
+        const moon = b.moon;   // geocentric already
+        const km = moon.r * AU_KM;
+        if (geo) {
+          const trop = tropicalOf(wrapLon(Math.atan2(moon.y, moon.x) / DEG), state.jd);
+          setText(rowParts.moon.km, signLabel(trop) + ' ' + signDegrees(trop).toFixed(1) + '°');
+        } else {
+          setText(rowParts.moon.km, Math.round(km).toLocaleString('en-US') + ' km');
+        }
         setText(rowParts.moon.radii, (km / REAL_RADIUS_KM.earth).toFixed(1) + ' R');
       }
       updateInfoMoonRows();
@@ -2567,6 +3002,7 @@
         case 'KeyR': resetView(); break;
         case 'KeyL': dom.optLabels.checked = !dom.optLabels.checked; dom.optLabels.dispatchEvent(new Event('change')); break;
         case 'KeyO': dom.optOrbits.checked = !dom.optOrbits.checked; dom.optOrbits.dispatchEvent(new Event('change')); break;
+        case 'KeyZ': setZodiac(!state.zodiac); break;
         case 'KeyH': togglePopover('help'); break;
         case 'Digit1': applyPreset('inner'); break;
         case 'Digit2': applyPreset('full'); break;
@@ -2661,6 +3097,7 @@
         state.trueScale = dom.optTrueScale.checked;
         updateOrbits(true);
         applyBeltScale();
+        buildZodiacDisc();   // its radius is mapDistance(ZODIAC_RADIUS_AU) in the new mapping; the markers follow it next frame
         if (!state.focus) applyPreset('default', 900);
       });
       dom.optTrueSize.addEventListener('change', () => {
@@ -2672,6 +3109,8 @@
       });
       dom.optPluto.addEventListener('change', () => setShowPluto(dom.optPluto.checked));
       dom.optPlutoPanel.addEventListener('change', () => setShowPluto(dom.optPlutoPanel.checked));
+      if (dom.optZodiac) dom.optZodiac.addEventListener('change', () => setZodiac(dom.optZodiac.checked));
+      if (dom.optZodiacPanel) dom.optZodiacPanel.addEventListener('change', () => setZodiac(dom.optZodiacPanel.checked));
       dom.optMoon.addEventListener('change', () => { state.showMoon = dom.optMoon.checked; applyBodyVisibility(); });
       if (dom.optPlanetMoons) {
         dom.optPlanetMoons.addEventListener('change', () => { state.showPlanetMoons = dom.optPlanetMoons.checked; applyBodyVisibility(); });
@@ -2701,6 +3140,9 @@
       dom.optTrueSize.checked = state.trueSize;
       dom.optPluto.checked = state.showPluto;
       dom.optPlutoPanel.checked = state.showPluto;
+      if (dom.optZodiac) dom.optZodiac.checked = state.zodiac;
+      if (dom.optZodiacPanel) dom.optZodiacPanel.checked = state.zodiac;
+      if (dom.zodiacBadge) dom.zodiacBadge.hidden = !state.zodiac;
       dom.optMoon.checked = state.showMoon;
       if (dom.optPlanetMoons) {
         dom.optPlanetMoons.checked = state.showPlanetMoons;
@@ -2904,6 +3346,7 @@
       const positions = computePositions(state.jd);
       currentSource = positions.source;
       updateBodies(positions, state.jd);
+      updateZodiac(state.jd, positions);
       updateOrbits(false);
       updateSun(timeMs / 1000);
       updateBelts(state.jd);
@@ -2913,6 +3356,7 @@
       updateNearPlane();
 
       updateScreenPositions();
+      updateZodiacLabelPositions();
       updateMoonSystems();
       updateMoonOrbitVisibility();
       updateLabels();
@@ -3001,6 +3445,8 @@
       buildBelt();
       buildKuiperBelt();
       buildLabels();
+      buildZodiacDisc();
+      buildZodiacMarkers();
       done++;
 
       wireUI();

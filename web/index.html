@@ -100,6 +100,33 @@
     background: rgba(6, 9, 20, 0.34);
   }
   .label.minor:hover, .label.minor.selected { opacity: 1; }
+  /* Zodiac sign labels: small caps with the sign's glyph, dimmer than the body
+     labels and not clickable; shown only while the zodiac overlay is on. */
+  .label.zodiac {
+    font-variant: small-caps;
+    text-transform: none;
+    font-size: 11.5px;
+    letter-spacing: 0.1em;
+    color: rgba(214, 219, 230, 0.72);
+    background: rgba(6, 9, 20, 0.3);
+    border-color: rgba(255, 255, 255, 0.05);
+    opacity: 0.8;
+    pointer-events: none;
+    cursor: default;
+  }
+  .label.zodiac .glyph { margin-right: 5px; font-size: 12px; font-variant: normal; }
+  /* Zodiac body markers: the tag beside each body's dot on the disc, in the body's
+     colour so it reads with the dot and the ray; clickable like a body label. */
+  .label.zodiac-mark {
+    font-size: 9.5px;
+    padding: 1px 6px;
+    letter-spacing: 0.06em;
+    color: color-mix(in srgb, var(--label-color, #fff) 70%, rgba(230, 233, 242, 0.9));
+    background: rgba(6, 9, 20, 0.36);
+    border-color: rgba(255, 255, 255, 0.06);
+    opacity: 0.9;
+  }
+  .label.zodiac-mark:hover { opacity: 1; }
   .label:hover { color: #fff; border-color: var(--border-strong); background: rgba(6, 9, 20, 0.6); }
   .label.selected {
     color: var(--accent);
@@ -415,6 +442,8 @@
     color: var(--muted);
   }
   #info-panel .panel-tools { display: flex; align-items: center; gap: 6px; }
+  #info-panel .panel-switches { display: flex; align-items: center; gap: 16px; padding: 0 16px 10px; }
+  #info-panel .panel-switches .mini-toggle { margin-right: 0; }
   .mini-toggle { display: inline-flex; align-items: center; gap: 6px; margin-right: 4px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); cursor: pointer; user-select: none; }
   .switch.mini { width: 28px; height: 16px; }
   .switch.mini::before { width: 10px; height: 10px; top: 2px; left: 2px; }
@@ -437,6 +466,7 @@
   }
   .badge.muted { background: rgba(255,255,255,0.05); border-color: var(--border); color: var(--muted); }
   .badge.exact { background: rgba(120, 220, 160, 0.12); border-color: rgba(120, 220, 160, 0.4); color: #a6ecc4; }
+  .badge[hidden] { display: none; }
   #info-rows { flex: 1; overflow: auto; padding: 0 8px 8px; }
   #info-rows::-webkit-scrollbar { width: 8px; }
   #info-rows::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
@@ -683,6 +713,8 @@
     #timeline-hint { display: none; }
     .label { font-size: 10px; padding: 1px 6px; }
     .label.minor { font-size: 9px; padding: 0 5px; }
+    .label.zodiac { font-size: 10.5px; }
+    .label.zodiac-mark { font-size: 9px; padding: 0 5px; }
   }
   @media (prefers-reduced-motion: reduce) {
     * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -722,6 +754,7 @@
   <h3>Display</h3>
   <div class="row"><label for="opt-orbits">Orbits <span class="sub">Sampled paths over one period</span></label><input class="switch" type="checkbox" id="opt-orbits" checked></div>
   <div class="row"><label for="opt-labels">Labels <span class="sub">Body names in the scene</span></label><input class="switch" type="checkbox" id="opt-labels" checked></div>
+  <div class="row"><label for="opt-zodiac">Zodiac overlay <span class="sub">Tropical signs around Earth, geocentric</span></label><input class="switch" type="checkbox" id="opt-zodiac"></div>
   <div class="row"><label for="opt-belt">Asteroid belt <span class="sub">Main belt, Hildas and Trojans, real orbits</span></label><input class="switch" type="checkbox" id="opt-belt" checked></div>
   <div class="row"><label for="opt-kuiper">Kuiper belt <span class="sub">Classical belt, plutinos, scattered disk, real orbits</span></label><input class="switch" type="checkbox" id="opt-kuiper" checked></div>
   <div class="row"><label for="opt-milkyway">Milky Way <span class="sub">Galactic band on the sky</span></label><input class="switch" type="checkbox" id="opt-milkyway" checked></div>
@@ -755,6 +788,7 @@
     <kbd>1 - 4</kbd><span>Camera presets</span>
     <kbd>L</kbd><span>Toggle labels</span>
     <kbd>O</kbd><span>Toggle orbits</span>
+    <kbd>Z</kbd><span>Toggle the zodiac overlay</span>
     <kbd>Esc</kbd><span>Return to the Sun</span>
     <kbd>H</kbd><span>This help</span>
   </div>
@@ -767,14 +801,13 @@
     <kbd>Shift+drag</kbd><span>Timeline: fine scrub, one year either side</span>
   </div>
   <h3>Accuracy</h3>
-  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size. Earth wears NASA Blue Marble imagery (public domain, served from the three.js repository) once it has downloaded, and turns with the real Greenwich sidereal time and the precessing pole of date, so the geography under the Sun is right for any date in range. The Moon wears NASA's Lunar Reconnaissance Orbiter colour mosaic with LOLA relief (CGI Moon Kit, NASA Scientific Visualization Studio, public domain) and turns with the IAU rotation model, so the familiar near side faces Earth, rocking with its real libration.</p>
+  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size. Earth wears NASA Blue Marble imagery (public domain, served from the three.js repository) once it has downloaded, and turns with the real Greenwich sidereal time and the precessing pole of date, so the geography under the Sun is right for any date in range. The Moon wears NASA's Lunar Reconnaissance Orbiter colour mosaic with LOLA relief (CGI Moon Kit, NASA Scientific Visualization Studio, public domain) and turns with the IAU rotation model, so the familiar near side faces Earth, rocking with its real libration. Zodiac overlay: tropical signs measured from the equinox of date, as seen from Earth. The coloured dots on the disc, each with a ray from Earth, mark the bodies' directions as seen from Earth and so their signs; with compressed distances the drawn planets themselves can sit outside their sign, because the compression is about the Sun, not Earth (true scale draws them exactly).</p>
 </div>
 
 <aside id="info-panel" class="glass" aria-label="Positions">
   <div class="panel-head">
     <h2>Positions</h2>
     <div class="panel-tools">
-      <label class="mini-toggle" for="opt-pluto-panel"><span>Pluto</span><input class="switch mini" type="checkbox" id="opt-pluto-panel" checked></label>
       <button id="btn-info-help" class="btn small icon" type="button" title="About these figures" aria-label="About these figures" aria-expanded="false" aria-controls="info-fineprint">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13zm0 1.3a5.2 5.2 0 1 0 0 10.4A5.2 5.2 0 0 0 8 2.8zm0 4.1a.8.8 0 0 1 .8.8v3.5a.8.8 0 0 1-1.6 0V7.7a.8.8 0 0 1 .8-.8zm0-2.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2z"/></svg>
       </button>
@@ -783,12 +816,17 @@
       </button>
     </div>
   </div>
+  <div class="panel-switches">
+    <label class="mini-toggle" for="opt-zodiac-panel"><span>Zodiac</span><input class="switch mini" type="checkbox" id="opt-zodiac-panel"></label>
+    <label class="mini-toggle" for="opt-pluto-panel"><span>Pluto</span><input class="switch mini" type="checkbox" id="opt-pluto-panel" checked></label>
+  </div>
   <div class="badges">
     <span id="source-badge" class="badge">Keplerian (JPL elements)</span>
     <span id="element-set" class="badge muted">jpl-1800-2050</span>
+    <span id="zodiac-badge" class="badge" hidden>geocentric · tropical</span>
   </div>
   <div id="info-rows" role="list"></div>
-  <p id="info-fineprint" class="fineprint" hidden>Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. Click a row to follow that body. Earth's Moon is always listed beneath Earth; while you follow another planet with moons, they are listed beneath it. Moon rows show distance from the planet's centre (km and planet radii) and orbital period.</p>
+  <p id="info-fineprint" class="fineprint" hidden>Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. Click a row to follow that body. Earth's Moon is always listed beneath Earth; while you follow another planet with moons, they are listed beneath it. Moon rows show distance from the planet's centre (km and planet radii) and orbital period. With the zodiac overlay on, the longitude column switches to the geocentric tropical zodiac: each body's sign as seen from Earth, measured from the equinox of date (the Earth row then shows the Sun's sign and the Moon row its sign in place of the km figure); the distances are unchanged. On the disc, the coloured dots with rays from Earth mark each body's direction from Earth and agree with these figures; the drawn planets need not, since compressed distances are compressed about the Sun and shift the directions from Earth by up to about 14 degrees (switch to true scale for an exact picture).</p>
 </aside>
 
 <section id="controls" class="glass" aria-label="Time controls">

@@ -217,6 +217,16 @@ orbital phase). Planets are oriented by their IAU poles, so moons orbit in
 the same plane as the rings. For every planet except Earth the moons, their
 orbits and labels fade in only when you zoom in close to that planet.
 
+**Zodiac mode.** The Zodiac switch (panel header, settings, or the Z key)
+draws the twelve tropical signs as sectors radiating from Earth in the
+ecliptic plane, oriented to the equinox of date so precession is included,
+with a marker and ray for each body along its true geocentric direction
+(needed because the compressed distance scale bends apparent directions from
+Earth). The Positions panel then shows geocentric tropical longitudes and
+signs, including the Sun's sign on the Earth row and the Moon's sign on its
+sub-row; `scripts/verify_zodiac.py` checks every body's sign against the
+engine's `AstroEngine.position(..., vertex='earth', zodiac='tropical')`.
+
 API: `GET /api/range`, `GET /api/positions?jd=<UT Julian Date>` or
 `?iso=<UTC timestamp>` return heliocentric ecliptic J2000 x/y/z in AU (Moon
 geocentric).
@@ -229,7 +239,8 @@ orrery/            importable engine (no web dependency)
   web.py           FastAPI backend for the web orrery (Part 6)
 web/               the browser orrery (index.html, app.js, ephemeris.js, moons.js, visuals.js)
 scripts/           verify_ephemeris.py (planets vs DE441), verify_moons.py (moons vs Horizons),
-                   verify_earth_orientation.py (sub-solar point vs Skyfield), verify_belts.js (belt orbits)
+                   verify_earth_orientation.py (sub-solar point vs Skyfield), verify_belts.js (belt orbits),
+                   verify_zodiac.py (geocentric tropical signs vs AstroEngine)
 tests/             pytest suite
 data/              downloaded ephemeris kernels (git-ignored)
 pyproject.toml

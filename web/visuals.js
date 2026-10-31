@@ -1521,6 +1521,71 @@
     '}'
   ].join('\n');
 
+  /*
+   * Zodiac overlay: a flat disc in the scene XZ plane (normal +Y) centred on Earth and
+   * divided into the twelve 30-deg tropical signs. The vertex shader passes the LOCAL
+   * xz position; the fragment shader turns it into the ecliptic longitude angle
+   * theta = atan(-z, x) (scene z = -ecliptic y), subtracts uAries (the J2000 longitude
+   * of the equinox of date, radians) and gets the tropical longitude s in [0, 2 pi).
+   * floor(s / 30 deg) is the sign index (0 Aries ... 11 Pisces). Sectors alternate two
+   * faint tints, the 30-deg boundaries are ~1.5 px lines, the outer 6% of the radius
+   * carries 10-deg ticks, and the disc fades in at the centre and out toward the rim.
+   * Line width: the arc distance to the nearest boundary is folded (|d|), and fwidth of
+   * a folded value collapses in the pixel quads that straddle the line (both pixels sit
+   * at about the same distance), which made lines near a screen axis vanish. So the
+   * pixel footprint is measured instead along the tangential direction from the smooth
+   * varying: pxArc = |tang . dFdx(vPos)| + |tang . dFdy(vPos)|, exact for the flat disc
+   * at any zoom or viewing angle and free of the atan / mod wraps.
+   * Every colour stays well below 1.0 so the bloom threshold ignores the overlay.
+   */
+  var ZODIAC_VERT = [
+    'precision highp float;',
+    'varying vec2 vPos;',
+    'void main() {',
+    '  vPos = position.xz;',
+    '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+    '}'
+  ].join('\n');
+
+  var ZODIAC_FRAG = [
+    'precision highp float;',
+    'uniform float uAries;',
+    'uniform float uRadius;',
+    'uniform float uOpacity;',
+    'uniform vec3 uColorA;',
+    'uniform vec3 uColorB;',
+    'uniform vec3 uLine;',
+    'varying vec2 vPos;',
+    'const float TAU = 6.283185307179586;',
+    'const float SPAN = 0.5235987755982988;',
+    'const float TICK = 0.17453292519943295;',
+    'void main() {',
+    '  float r = length(vPos);',
+    '  float rn = r / uRadius;',
+    '  float theta = atan(-vPos.y, vPos.x);',
+    '  float s = mod(theta - uAries, TAU);',
+    '  float sector = floor(s / SPAN);',
+    '  float parity = mod(sector, 2.0);',
+    '  vec3 col = mix(uColorA, uColorB, parity);',
+    '  float alpha = mix(0.07, 0.05, parity);',
+    '  float frac = fract(s / SPAN);',
+    '  float arc = r * min(frac, 1.0 - frac) * SPAN;',
+    '  vec2 tang = vec2(vPos.y, -vPos.x) / max(r, 0.000001);',
+    '  float pxArc = abs(dot(tang, dFdx(vPos))) + abs(dot(tang, dFdy(vPos)));',
+    '  float lw = pxArc * 0.75;',
+    '  float line = 1.0 - smoothstep(lw * 0.5, lw * 1.5, arc);',
+    '  float frac10 = fract(s / TICK);',
+    '  float arc10 = r * min(frac10, 1.0 - frac10) * TICK;',
+    '  float tick = (1.0 - smoothstep(lw * 0.5, lw * 1.5, arc10)) * step(0.94, rn);',
+    '  col = mix(col, uLine, max(line, tick));',
+    '  alpha = max(alpha, max(line * 0.35, tick * 0.45));',
+    '  alpha *= uOpacity;',
+    '  alpha *= smoothstep(0.0, 0.04, rn) * (1.0 - smoothstep(0.82, 1.0, rn));',
+    '  if (alpha < 0.003) discard;',
+    '  gl_FragColor = vec4(col, alpha);',
+    '}'
+  ].join('\n');
+
   /* ------------------------------------------------------------------ */
   /* THREE wrappers                                                      */
   /* ------------------------------------------------------------------ */
@@ -1794,6 +1859,85 @@
     var points = new T.Points(geo, mat);
     points.name = 'kuiperBelt';
     return points;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Zodiac overlay                                                      */
+  /* ------------------------------------------------------------------ */
+
+  /* The twelve tropical signs in longitude order; sign k spans [30 k, 30 k + 30) deg from the equinox of date. */
+  var ZODIAC = [
+    { name: 'Aries', glyph: '\u2648' },
+    { name: 'Taurus', glyph: '\u2649' },
+    { name: 'Gemini', glyph: '\u264A' },
+    { name: 'Cancer', glyph: '\u264B' },
+    { name: 'Leo', glyph: '\u264C' },
+    { name: 'Virgo', glyph: '\u264D' },
+    { name: 'Libra', glyph: '\u264E' },
+    { name: 'Scorpio', glyph: '\u264F' },
+    { name: 'Sagittarius', glyph: '\u2650' },
+    { name: 'Capricorn', glyph: '\u2651' },
+    { name: 'Aquarius', glyph: '\u2652' },
+    { name: 'Pisces', glyph: '\u2653' }
+  ];
+
+  var ZODIAC_SEGMENTS = 360;
+
+  /* CPU twin of the sector test in ZODIAC_FRAG: sign index 0-11 of the ecliptic longitude
+   * angle theta (radians, J2000) when 0 deg Aries lies at longitude aries (radians). */
+  function zodiacSector(theta, aries) {
+    var s = theta - aries;
+    s = s - TAU * Math.floor(s / TAU);
+    return Math.floor(s / (Math.PI / 6));
+  }
+
+  /*
+   * zodiacDisc(radius, opts) -> THREE.Mesh: a fan of ZODIAC_SEGMENTS triangles of the
+   * given radius in the local XZ plane (normal +Y) carrying the ZODIAC shaders. The
+   * caller places it at Earth every frame and never rotates it; the orientation lives
+   * in material.uniforms.uAries (radians, J2000 ecliptic longitude of the equinox of
+   * date). vPos is the local position, so mesh.scale may resize the disc without
+   * touching uRadius, and the line widths follow the zoom through fwidth.
+   * opts: { opacity, colorA, colorB, line } (hex colours).
+   */
+  function zodiacDisc(radius, opts) {
+    var T = requireThree();
+    opts = opts || {};
+    radius = radius > 0 ? radius : 1;
+    var n = ZODIAC_SEGMENTS;
+    var pos = new Float32Array(n * 9);
+    var i, a0, a1, o;
+    for (i = 0; i < n; i++) {
+      a0 = TAU * i / n;
+      a1 = TAU * (i + 1) / n;
+      o = i * 9;
+      /* centre, rim at a0, rim at a1: counterclockwise seen from +Y, rim direction (cos a, 0, -sin a) */
+      pos[o + 3] = radius * Math.cos(a0); pos[o + 5] = -radius * Math.sin(a0);
+      pos[o + 6] = radius * Math.cos(a1); pos[o + 8] = -radius * Math.sin(a1);
+    }
+    var geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
+    var mat = new T.ShaderMaterial({
+      uniforms: {
+        uAries: { value: 0 },
+        uRadius: { value: radius },
+        uOpacity: { value: opts.opacity === undefined ? 0.3 : opts.opacity }   /* the frame is sRGB-encoded after rendering, so low linear alphas read ~4x stronger */,
+        uColorA: { value: new T.Color(opts.colorA === undefined ? 0xc9a24a : opts.colorA) },
+        uColorB: { value: new T.Color(opts.colorB === undefined ? 0x6b78d6 : opts.colorB) },
+        uLine: { value: new T.Color(opts.line === undefined ? 0xd9d2b8 : opts.line) }
+      },
+      vertexShader: ZODIAC_VERT,
+      fragmentShader: ZODIAC_FRAG,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: T.DoubleSide,
+      blending: T.NormalBlending
+    });
+    var mesh = new T.Mesh(geo, mat);
+    mesh.name = 'zodiacDisc';
+    mesh.userData = { radius: radius, segments: n };
+    return mesh;
   }
 
   /* ------------------------------------------------------------------ */
@@ -2132,6 +2276,9 @@
     kuiperBelt: kuiperBelt,
     orbitalBelt: orbitalBelt,
     beltReference: beltReference,
+    zodiacDisc: zodiacDisc,
+    zodiacSector: zodiacSector,
+    ZODIAC: ZODIAC,
     PLANET_STYLE: PLANET_STYLE,
     ATMOSPHERE: ATMOSPHERE,
     DEFAULT_SIZE: DEFAULT_SIZE,
@@ -2142,7 +2289,8 @@
     shaders: {
       GLSL_NOISE: GLSL_NOISE, SUN_VERT: SUN_VERT, SUN_FRAG: SUN_FRAG, CORONA_VERT: CORONA_VERT,
       CORONA_FRAG: CORONA_FRAG, ATMO_VERT: ATMO_VERT, ATMO_FRAG: ATMO_FRAG, STAR_VERT: STAR_VERT,
-      STAR_FRAG: STAR_FRAG, SKY_VERT: SKY_VERT, SKY_FRAG: SKY_FRAG, BELT_VERT: BELT_VERT, BELT_FRAG: BELT_FRAG
+      STAR_FRAG: STAR_FRAG, SKY_VERT: SKY_VERT, SKY_FRAG: SKY_FRAG, BELT_VERT: BELT_VERT, BELT_FRAG: BELT_FRAG,
+      ZODIAC_VERT: ZODIAC_VERT, ZODIAC_FRAG: ZODIAC_FRAG
     }
   };
 
