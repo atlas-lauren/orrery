@@ -226,6 +226,12 @@ Earth). The Positions panel then shows geocentric tropical longitudes and
 signs, including the Sun's sign on the Earth row and the Moon's sign on its
 sub-row; `scripts/verify_zodiac.py` checks every body's sign against the
 engine's `AstroEngine.position(..., vertex='earth', zodiac='tropical')`.
+The Real scale switch beside it (settings, or Shift+Z) shows the same overlay
+with linear distances, following Earth from straight above: the planets
+themselves then sit in their signs and the rays pass through them, and the
+sign labels and body markers ring the visible part of the ecliptic at any
+zoom rather than the far rim of the disc. Switching it off keeps the camera,
+so the two views can be compared in place.
 
 API: `GET /api/range`, `GET /api/positions?jd=<UT Julian Date>` or
 `?iso=<UTC timestamp>` return heliocentric ecliptic J2000 x/y/z in AU (Moon
