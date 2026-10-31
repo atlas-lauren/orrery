@@ -165,16 +165,28 @@
     inner: { elevation: 42, azimuth: 0, au: 1.8, mult: 1.95 },
     full: { elevation: 45, azimuth: 0, au: 42, mult: 1.55 },
     top: { elevation: 89.9, azimuth: 0, au: 42, mult: 1.35 },
-    edge: { elevation: 1.5, azimuth: 0, au: 42, mult: 1.5 },
-    // Real-scale zodiac view: straight above Earth, the half-height of the view about
-    // 11 AU (mult = 1 / tan(fov / 2)), so Jupiter and Saturn are in view and the inner
-    // system is still resolvable; rays and rim tags point the way to the rest.
-    zodiac: { elevation: 89.9, azimuth: 0, au: 11, mult: 2.4 },
-    zodiacInner: { elevation: 89.9, azimuth: 0, au: 2.6, mult: 2.4 },   // Sun, Mercury, Venus, Mars around Earth
-    zodiacFull: { elevation: 89.9, azimuth: 0, au: 42, mult: 2.4 }      // the whole disc, out past Pluto
+    edge: { elevation: 1.5, azimuth: 0, au: 42, mult: 1.5 }
   };
-  // In the real-scale zodiac view the camera presets frame Earth from above instead.
-  const ZODIAC_PRESET_MAP = { default: 'zodiac', inner: 'zodiacInner', full: 'zodiacFull', top: 'zodiac' };
+
+  // Real-scale zodiac view: the signs and the body markers sit on a wheel of fixed
+  // screen size around Earth, like a chart wheel, whatever the zoom. Its radius in
+  // CSS px comes from the part of the viewport clear of the title strip, the time
+  // controls and the Positions panel, less room outside it for the sign labels, and
+  // the camera's view offset puts Earth at its centre. The camera presets then set
+  // how many AU from Earth lie on the ring: Saturn's distance (default and Top), the
+  // inner system (Inner), the whole disc out past Pluto (Full).
+  const WHEEL_MARGIN_X = 84;     // px outside the ring for the widest sign label
+  const WHEEL_MARGIN_Y = 36;     // px outside the ring for a label above or below
+  const WHEEL_MIN_PX = 150;      // below this the Positions panel may overlap the wheel instead
+  const WHEEL_SIGN_GAP = 6;      // px between the ring and a sign label's near edge
+  const WHEEL_TAG_GAP = 5;       // px between a marker dot and its tag's near edge
+  const WHEEL_ELEVATION = 89.9;  // camera elevation above the ecliptic in the view
+  const ZODIAC_RING_AU = { default: 11, top: 11, inner: 1.6, full: 50 };
+  // Zoom-out limit of the orbit controls: the usual one, and the ceiling the
+  // real-scale view may raise it to so the Full framing fits (the star sphere is
+  // at STAR_RADIUS, 6000; the camera must stay inside it).
+  const ZOOM_MAX_DEFAULT = 3000;
+  const ZOOM_MAX_WHEEL = 5800;
 
   // Body dots: the fixed-size sprite each body carries for true-size mode doubles as
   // the body's mark in the real-scale zodiac view, where the globes are a pixel or
@@ -375,6 +387,7 @@
       optZodiacRealPanel: $('opt-zodiac-real-panel'),
       zodiacRealWrap: $('zodiac-real-wrap'),
       zodiacBadge: $('zodiac-badge'),
+      titleBlock: $('title-block'),
       btnInfoHelp: $('btn-info-help'),
       infoFineprint: $('info-fineprint'),
       optMilkyWay: $('opt-milkyway'),
@@ -432,7 +445,7 @@
       libration: () => (typeof Eph.moonLibration === 'function' ? Eph.moonLibration(state.jd) : null),
       jd: () => state.jd,
       zodiac: () => ({ on: state.zodiac, real: state.zodiacReal, linear: linearDistances(), equinoxDeg: zodiac.equinoxDeg,
-        radius: zodiac.radius, ring: zodiac.ring, disc: !!zodiac.mesh,
+        radius: zodiac.radius, ring: zodiac.ring, disc: !!zodiac.mesh, wheel: zodiac.wheel,
         ariesRad: zodiac.uniforms ? zodiac.uniforms.uAries.value : NaN,
         markers: zodiac.markers.map((m) => ({ name: m.name, shown: m.shown, tropicalDeg: m.tropicalDeg })) }),
       // Screen positions (CSS px) of the bodies and of the zodiac markers, for checking
@@ -458,6 +471,10 @@
       cache: new Map()
     };
     if (location.protocol === 'file:') precision.enabled = false;
+
+    // Set once the zodiac objects exist; the wheel layout (called from resize and
+    // panel handlers, some of which run during the build) waits for it.
+    let wheelReady = false;
 
     // ---- Distance mapping -------------------------------------------------------
 
@@ -596,6 +613,7 @@
         const u = orbitalBelts[i].uniforms;
         if (u.uPixelRatio) u.uPixelRatio.value = renderer.getPixelRatio();
       }
+      updateWheelLayout();
     }
     window.addEventListener('resize', onResize);
 
@@ -608,6 +626,7 @@
         // panel's 20 px gap holds whatever the controls' own bottom offset is.
         const h = Math.round(window.innerHeight - controlsEl.getBoundingClientRect().top);
         if (h > 0 && h < window.innerHeight) document.documentElement.style.setProperty('--controls-h', h + 'px');
+        updateWheelLayout();
       };
       const controlsObserver = new ResizeObserver(updateControlsHeight);
       controlsObserver.observe(controlsEl);
@@ -1517,9 +1536,11 @@
     // the drawn planets themselves sit in their signs and the rays pass through them.
     // Entering it follows Earth from straight above at the 'zodiac' camera preset.
     // The disc is then 1200 units across and its rim is out of view for anything
-    // nearer than Neptune, so the sign labels and the body markers leave the rim and
-    // ring the visible part of the ecliptic instead (zodiac.ring, set per frame from
-    // the camera's distance to Earth), like a compass rose, at any zoom.
+    // nearer than Neptune, so the sign labels and the body markers leave the rim for
+    // a wheel of fixed screen size around Earth (zodiac.wheel, zodiac.ring): a drawn
+    // ring with degree ticks, the sign labels just outside it, the marker dots on it
+    // with their tags just inside, Earth at its centre. Zooming changes what the
+    // wheel frames, never the wheel.
 
     // Disc radius in AU. The disc is centred on Earth, so Pluto's distance FROM EARTH
     // matters: it reaches 48.8 AU near aphelion (2110s). The shader fades the rim from
@@ -1528,23 +1549,21 @@
     const ZODIAC_LABEL_FRACTION = 0.9;    // sign labels sit at this fraction of the disc radius
     const ZODIAC_MARKER_FRACTION = 0.8;   // body markers sit at this fraction (about Pluto's drawn orbit)
     const ZODIAC_MARKER_PX = 4;           // screen radius of a marker dot, for the tag placement
-    // Real-scale view: the rim rides at this fraction of the view's half-extent at
-    // Earth's depth (sign labels then sit at 0.85 of it, markers at 0.755), and never
-    // closer to Earth than this many drawn Earth radii.
-    const ZODIAC_RING_VIEW_FRACTION = 0.944;
-    const ZODIAC_RING_MIN_EARTH_RADII = 4;
+    // (In the real-scale view both fractions are 1: labels and markers sit on the wheel.)
     // Bodies with a geocentric marker, in Positions-panel order (Earth is the centre).
     const ZODIAC_MARKER_BODIES = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto'];
     const zodiac = {
       mesh: null, uniforms: null, radius: 0, equinoxDeg: 0, lastJd: NaN, labels: [], warned: false,
       ring: 0,      // rim radius for this frame's sign labels and markers (see updateZodiacRing)
+      wheel: { cx: 0, cy: 0, px: 0 },   // real-scale view: the wheel's screen centre and radius (CSS px)
+      ringLine: null, ticks: null,      // the drawn wheel: a LineLoop and 36 degree ticks
       rays: null,   // LineSegments, one segment per marker from Earth to the dot
       // Marker records carry the same label fields as the bodies (label, labelBox,
       // labelSlot, screen) so the label placement pass treats their tags alike.
       markers: ZODIAC_MARKER_BODIES.map((name) => ({
         name, sprite: null, shown: false, tropicalDeg: NaN, world: new THREE.Vector3(), label: null,
         labelBox: { w: 0, h: 0 }, labelSlot: { dir: 0, ring: 0 },
-        screen: { x: 0, y: 0, r: 0, visible: false, inView: false }
+        screen: { x: 0, y: 0, r: 0, visible: false, inView: false, ux: 1, uy: 0 }
       }))
     };
     const hasEquinoxLongitude = typeof Eph.equinoxLongitude === 'function';
@@ -1654,6 +1673,48 @@
       rays.visible = false;         // shown by updateZodiacMarkers once it holds positions
       scene.add(rays);
       zodiac.rays = rays;
+      buildZodiacWheel();
+    }
+
+    // The drawn wheel of the real-scale view: a unit circle in the ecliptic plane and
+    // 36 radial ticks every 10 deg from 0 deg Aries, longer at the sign boundaries;
+    // both are moved to Earth and scaled to zodiac.ring each frame, the ticks turned
+    // to the equinox of date. Hidden outside the view.
+    function buildZodiacWheel() {
+      const N = 180;
+      const pos = new Float32Array(N * 3);
+      for (let i = 0; i < N; i++) {
+        const a = (i / N) * TWO_PI;
+        pos[i * 3] = Math.cos(a); pos[i * 3 + 1] = 0; pos[i * 3 + 2] = -Math.sin(a);
+      }
+      const ringGeo = new THREE.BufferGeometry();
+      ringGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      const ringLine = new THREE.LineLoop(ringGeo, new THREE.LineBasicMaterial({ color: 0xd9c58a, transparent: true, opacity: 0.42, depthWrite: false }));
+      ringLine.name = 'zodiacWheel';
+      ringLine.frustumCulled = false;
+      ringLine.renderOrder = 1;
+      ringLine.visible = false;
+      scene.add(ringLine);
+      zodiac.ringLine = ringLine;
+
+      const T = 36;
+      const tp = new Float32Array(T * 6);
+      for (let j = 0; j < T; j++) {
+        const a = j * 10 * DEG;
+        const len = j % 3 === 0 ? 1.045 : 1.022;
+        const c = Math.cos(a), s = -Math.sin(a), o = j * 6;
+        tp[o] = c; tp[o + 1] = 0; tp[o + 2] = s;
+        tp[o + 3] = c * len; tp[o + 4] = 0; tp[o + 5] = s * len;
+      }
+      const tickGeo = new THREE.BufferGeometry();
+      tickGeo.setAttribute('position', new THREE.BufferAttribute(tp, 3));
+      const ticks = new THREE.LineSegments(tickGeo, new THREE.LineBasicMaterial({ color: 0xd9c58a, transparent: true, opacity: 0.55, depthWrite: false }));
+      ticks.name = 'zodiacWheelTicks';
+      ticks.frustumCulled = false;
+      ticks.renderOrder = 1;
+      ticks.visible = false;
+      scene.add(ticks);
+      zodiac.ticks = ticks;
     }
 
     // J2000 ecliptic longitude of 0 deg Aries (the mean equinox of date), degrees,
@@ -1699,25 +1760,107 @@
         zodiac.mesh.position.copy(earthPos);
         zodiac.uniforms.uAries.value = eq * DEG;
       }
-      updateZodiacRing(earthPos, earth);
+      updateZodiacRing(earthPos);
+      const wheelOn = inZodiacRealView();
+      if (zodiac.ringLine) {
+        zodiac.ringLine.visible = wheelOn;
+        zodiac.ticks.visible = wheelOn;
+        if (wheelOn) {
+          zodiac.ringLine.position.copy(earthPos);
+          zodiac.ringLine.scale.setScalar(zodiac.ring);
+          zodiac.ticks.position.copy(earthPos);
+          zodiac.ticks.scale.setScalar(zodiac.ring);
+          zodiac.ticks.rotation.y = eq * DEG;   // local +x (0 deg Aries) to the equinox's J2000 longitude
+        }
+      }
       if (positions) updateZodiacMarkers(positions, earthPos, eq);
     }
 
     // Rim radius for the sign labels and the body markers. Compressed: the disc
-    // radius, whose rim is in view from the default cameras. Real scale: the rim
-    // follows the camera, clamped to the disc, so the labels and markers stay in
-    // view around Earth from the whole disc down to Earth's neighbourhood. The
-    // half-extent is the view's at Earth's depth, the smaller of width and height.
-    // The camera moves after this in the frame, so the ring lags it by one frame.
-    function updateZodiacRing(earthPos, earth) {
+    // radius, whose rim is in view from the default cameras. Real scale: the world
+    // radius that the wheel's fixed screen radius subtends at Earth's depth, so the
+    // wheel holds its size on screen through any zoom (updateZodiac runs after the
+    // camera update in the frame, so there is no lag).
+    function updateZodiacRing(earthPos) {
       let ring = zodiac.radius;
-      if (state.zodiacReal) {
+      if (inZodiacRealView()) {
+        const h = renderer.domElement.clientHeight;
         const camDist = camera.position.distanceTo(earthPos);
-        const halfExtent = camDist * Math.tan(camera.fov * 0.5 * DEG) * Math.min(1, camera.aspect);
-        const floor = Math.min(zodiac.radius, earth.radius * ZODIAC_RING_MIN_EARTH_RADII);
-        ring = clamp(halfExtent * ZODIAC_RING_VIEW_FRACTION, floor, zodiac.radius);
+        ring = Math.max(1e-3, (zodiac.wheel.px / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
       }
       zodiac.ring = ring;
+    }
+
+    // ---- Wheel layout (real-scale view) ----
+    //
+    // The wheel's centre and radius in CSS px from the part of the viewport that
+    // the fixed UI leaves free. Recomputed on resize, when the time controls change
+    // height, when the Positions panel opens or closes and on entering the view.
+    // wheelReady (declared with the state) guards calls made while the scene is
+    // still being built.
+    function updateWheelLayout() {
+      if (!wheelReady) return;
+      const w = renderer.domElement.clientWidth;
+      const h = renderer.domElement.clientHeight;
+      if (!w || !h) return;
+      let top = 72, bottom = h, left = 0, right = w;   // 72: the top-right buttons
+      if (dom.titleBlock) top = Math.max(top, dom.titleBlock.getBoundingClientRect().bottom + 10);
+      if (controlsEl) bottom = Math.min(bottom, controlsEl.getBoundingClientRect().top - 8);
+      const panelOpen = dom.infoPanel && !dom.infoPanel.classList.contains('collapsed');
+      let pr = null;
+      if (panelOpen) {
+        pr = dom.infoPanel.getBoundingClientRect();
+        if (pr.left >= w * 0.45) right = Math.min(right, pr.left - 12);        // beside the scene
+        else if (pr.top >= h * 0.4) bottom = Math.min(bottom, pr.top - 8);    // narrow layout: below it
+      }
+      const radius = (l, r, t, b) => Math.min((r - l) * 0.5 - WHEEL_MARGIN_X, (b - t) * 0.5 - WHEEL_MARGIN_Y);
+      let px = radius(left, right, top, bottom);
+      if (px < WHEEL_MIN_PX && pr) {   // too cramped: let the panel overlap the wheel instead
+        right = w;
+        bottom = Math.min(h, controlsEl ? controlsEl.getBoundingClientRect().top - 8 : h);
+        px = radius(left, right, top, bottom);
+      }
+      if (px < 60) { left = 0; right = w; top = 0; bottom = h; px = Math.max(60, radius(0, w, 0, h)); }
+      zodiac.wheel.cx = (left + right) * 0.5;
+      zodiac.wheel.cy = (top + bottom) * 0.5;
+      zodiac.wheel.px = px;
+      applyViewOffset();
+      updateZoomRange();
+    }
+
+    // In the real-scale view the camera's frustum is shifted so that its target,
+    // Earth, projects to the wheel's centre; projection, picking and labels follow.
+    function applyViewOffset() {
+      const w = renderer.domElement.clientWidth;
+      const h = renderer.domElement.clientHeight;
+      if (inZodiacRealView() && w && h && wheelReady) {
+        camera.setViewOffset(w, h, w * 0.5 - zodiac.wheel.cx, h * 0.5 - zodiac.wheel.cy, w, h);
+      } else if (camera.view && camera.view.enabled) {
+        camera.clearViewOffset();
+      }
+    }
+
+    // Camera offset from Earth, straight above it, that puts `au` AU from Earth on
+    // the wheel's ring (linear mapping: the view holds distances linear).
+    function zodiacPresetOffset(au, out) {
+      const h = renderer.domElement.clientHeight;
+      const px = Math.max(1, zodiac.wheel.px);
+      const dist = (DISTANCE_SCALE * au) * (h * 0.5) / (px * Math.tan(camera.fov * 0.5 * DEG));
+      const el = WHEEL_ELEVATION * DEG;
+      return out.set(0, Math.sin(el) * dist, Math.cos(el) * dist);
+    }
+
+    // The orbit controls' zoom-out limit: in the real-scale view far enough for the
+    // Full framing (a small wheel on a tall window needs a distant camera), else the
+    // default. Called with the wheel layout and on leaving the view.
+    const zoomRangeV = new THREE.Vector3();
+    function updateZoomRange() {
+      if (inZodiacRealView() && wheelReady) {
+        const full = zodiacPresetOffset(ZODIAC_RING_AU.full, zoomRangeV).length();
+        controls.maxDistance = clamp(full * 1.05, ZOOM_MAX_DEFAULT, ZOOM_MAX_WHEEL);
+      } else {
+        controls.maxDistance = ZOOM_MAX_DEFAULT;
+      }
     }
 
     // Marker i sits at Earth + ZODIAC_MARKER_FRACTION * ring along the body's
@@ -1730,7 +1873,7 @@
     function updateZodiacMarkers(positions, earthPos, eq) {
       const b = positions.bodies;
       const e = b.earth;
-      const r = zodiac.ring * ZODIAC_MARKER_FRACTION;
+      const r = inZodiacRealView() ? zodiac.ring : zodiac.ring * ZODIAC_MARKER_FRACTION;
       const rayAttr = zodiac.rays ? zodiac.rays.geometry.attributes.position : null;
       const ray = rayAttr ? rayAttr.array : null;
       for (let i = 0; i < zodiac.markers.length; i++) {
@@ -1788,8 +1931,11 @@
           if (m.label) m.label.style.display = 'none';
         }
         if (zodiac.rays) zodiac.rays.visible = false;   // shown again by the next frame's marker update
+        if (zodiac.ringLine) { zodiac.ringLine.visible = false; zodiac.ticks.visible = false; }
       }
       if (linearDistances() !== wasLinear) applyDistanceMapping(false);
+      applyViewOffset();
+      updateZoomRange();
       if (state.zodiac && state.zodiacReal) enterZodiacRealView();
       zodiac.lastJd = NaN;
       updateZodiac(state.jd);
@@ -1806,6 +1952,8 @@
       if (state.zodiacReal && !state.zodiac) { setZodiac(true); return; }   // handles the mapping and the view
       syncZodiacUI();
       if (linearDistances() !== wasLinear) applyDistanceMapping(false);
+      applyViewOffset();
+      updateZoomRange();
       if (state.zodiac && state.zodiacReal) enterZodiacRealView();
       zodiac.lastJd = NaN;
       updateZodiac(state.jd);
@@ -1825,10 +1973,10 @@
       }
     }
 
-    // Follow Earth from straight above at the 'zodiac' preset distance, which the
-    // (now linear) mapping sizes to about 11 AU of half-height.
+    // Follow Earth from straight above, with Saturn's distance on the wheel's ring.
     function enterZodiacRealView() {
-      setFocus('earth', presetPosition('zodiac', new THREE.Vector3()), 1100);
+      updateWheelLayout();
+      setFocus('earth', zodiacPresetOffset(ZODIAC_RING_AU.default, new THREE.Vector3()), 1100);
     }
 
     // ---- Moon systems -------------------------------------------------------------------
@@ -2416,7 +2564,7 @@
         zodiac.labels.push({
           name: 'zodiac-' + sign.name.toLowerCase(), index: k, label: el,
           labelBox: { w: 0, h: 0 }, labelSlot: { dir: 0, ring: 0 },
-          screen: { x: 0, y: 0, r: 0, visible: false, inView: false }
+          screen: { x: 0, y: 0, r: 0, visible: false, inView: false, ux: 1, uy: 0 }
         });
       }
     }
@@ -2460,17 +2608,20 @@
     const worldV = new THREE.Vector3();
     const zodiacAnchor = new THREE.Vector3();
 
-    // Projects the sign label anchors, Earth + 0.9 ring toward the middle of each
-    // sector (ecliptic longitude a is the scene direction (cos a, 0, -sin a)), and
-    // the body markers' world positions; run after updateScreenPositions so the
-    // camera matrices are current. Anchors behind the camera or well outside the
-    // viewport are marked not visible.
+    // Projects the sign label anchors, Earth + the label radius toward the middle of
+    // each sector (ecliptic longitude a is the scene direction (cos a, 0, -sin a)),
+    // and the body markers' world positions, and records each anchor's screen
+    // direction from Earth for the wheel placement; run after updateScreenPositions
+    // so the camera matrices and Earth's screen position are current. Anchors behind
+    // the camera or well outside the viewport are marked not visible.
     function updateZodiacLabelPositions() {
       if (!state.zodiac || !bodies.earth) return;
       const w = renderer.domElement.clientWidth;
       const h = renderer.domElement.clientHeight;
-      const earthPos = bodies.earth.group.position;
-      const r = zodiac.ring * ZODIAC_LABEL_FRACTION;
+      const earthRec = bodies.earth;
+      const earthPos = earthRec.group.position;
+      const ex = earthRec.screen.x, ey = earthRec.screen.y;
+      const r = inZodiacRealView() ? zodiac.ring : zodiac.ring * ZODIAC_LABEL_FRACTION;
       const eq = equinoxOfDate(state.jd);
       for (let k = 0; k < zodiac.labels.length; k++) {
         const z = zodiac.labels[k];
@@ -2482,6 +2633,7 @@
         s.visible = s.inView;
         s.x = (projV.x * 0.5 + 0.5) * w;
         s.y = (-projV.y * 0.5 + 0.5) * h;
+        radialDir(s, ex, ey);
       }
       for (const m of zodiac.markers) {
         const s = m.screen;
@@ -2492,7 +2644,15 @@
         s.x = (projV.x * 0.5 + 0.5) * w;
         s.y = (-projV.y * 0.5 + 0.5) * h;
         s.r = ZODIAC_MARKER_PX;
+        radialDir(s, ex, ey);
       }
+    }
+
+    // Unit screen direction from Earth (ex, ey) to the anchor, stored on its record.
+    function radialDir(s, ex, ey) {
+      const dx = s.x - ex, dy = s.y - ey;
+      const len = Math.hypot(dx, dy);
+      if (len > 1e-6) { s.ux = dx / len; s.uy = dy / len; } else { s.ux = 1; s.uy = 0; }
     }
 
     function updateScreenPositions() {
@@ -2612,6 +2772,42 @@
       return true;
     }
 
+    // Distance from a box's centre to its edge along the unit direction (ux, uy).
+    function boxReach(box, ux, uy) {
+      const rx = Math.abs(ux) > 1e-6 ? (box.w * 0.5) / Math.abs(ux) : Infinity;
+      const ry = Math.abs(uy) > 1e-6 ? (box.h * 0.5) / Math.abs(uy) : Infinity;
+      return Math.min(rx, ry);
+    }
+
+    // Places rec's label centred on (cx, cy) and records it; with check, only when
+    // the slot is free, returning false otherwise.
+    function placeLabelCentred(rec, cx, cy, check, w, h) {
+      const box = rec.labelBox;
+      tmpRect.x = cx - box.w * 0.5; tmpRect.y = cy - box.h * 0.5; tmpRect.w = box.w; tmpRect.h = box.h;
+      if (check && !slotFree(rec, tmpRect, w, h)) return false;
+      recordPlaced(tmpRect);
+      const el = rec.label;
+      el.style.display = '';
+      el.style.transform = 'translate(' + tmpRect.x.toFixed(1) + 'px, ' + tmpRect.y.toFixed(1) + 'px)';
+      return true;
+    }
+
+    // Wheel (real-scale view): a sign label hugs the ring from outside at its
+    // sector's middle and is never displaced (it is placed first; the bodies' labels
+    // avoid it); a marker tag hugs its dot from inside, falling back to the usual
+    // search around the dot when that slot is taken.
+    function placeSignOnWheel(z, w, h) {
+      const s = z.screen;
+      const d = WHEEL_SIGN_GAP + boxReach(z.labelBox, s.ux, s.uy);
+      placeLabelCentred(z, s.x + s.ux * d, s.y + s.uy * d, false, w, h);
+    }
+
+    function placeTagOnWheel(m, w, h) {
+      const s = m.screen;
+      const d = WHEEL_TAG_GAP + ZODIAC_MARKER_PX + boxReach(m.labelBox, s.ux, s.uy);
+      return placeLabelCentred(m, s.x - s.ux * d, s.y - s.uy * d, true, w, h);
+    }
+
     function updateLabels() {
       if (!state.showLabels) return;
       const w = renderer.domElement.clientWidth;
@@ -2636,23 +2832,36 @@
         return b.screen.r - a.screen.r;
       });
       placedCount = 0;
+      const wheelOn = state.zodiac && inZodiacRealView();
+      // On the wheel the signs are fixed furniture: placed first, so every other
+      // label keeps clear of them.
+      if (wheelOn) {
+        for (const z of zodiac.labels) {
+          if (!z.screen.visible) { hideLabel(z); continue; }
+          if (z.labelBox.w === 0) measureLabels();
+          placeSignOnWheel(z, w, h);
+        }
+      }
       for (const rec of labelOrder) {
         if (placeLabel(rec, w, h, false)) rec.label.classList.toggle('selected', state.focus === rec.name);
       }
-      // The zodiac marker tags and the signs come last so they yield to every body.
-      // A marker tag hides when crowded (its dot still shows the direction); a sign
-      // falls back to its anchor rather than hide. Off-screen anchors are hidden.
+      // The zodiac marker tags come after the bodies: on the wheel just inside the
+      // dot, else in the first free slot around it; a tag hides when crowded (its
+      // dot still shows the direction). In the compressed view the signs come last
+      // and fall back to their anchors rather than hide. Off-screen anchors are hidden.
       if (state.zodiac) {
         for (const m of zodiac.markers) {
           if (!m.label) continue;
           if (!m.screen.visible) { hideLabel(m); continue; }
           if (m.labelBox.w === 0) measureLabels();
-          placeLabel(m, w, h, false);
+          if (!(wheelOn && placeTagOnWheel(m, w, h))) placeLabel(m, w, h, false);
         }
-        for (const z of zodiac.labels) {
-          if (!z.screen.visible) { hideLabel(z); continue; }
-          if (z.labelBox.w === 0) measureLabels();
-          placeLabel(z, w, h, true);
+        if (!wheelOn) {
+          for (const z of zodiac.labels) {
+            if (!z.screen.visible) { hideLabel(z); continue; }
+            if (z.labelBox.w === 0) measureLabels();
+            placeLabel(z, w, h, true);
+          }
         }
       }
     }
@@ -2746,8 +2955,8 @@
     // the inner system out to Mars, the whole disc out past Pluto, Saturn's distance.
     function applyPreset(preset, duration) {
       const ms = duration == null ? 1000 : duration;
-      if (inZodiacRealView() && ZODIAC_PRESET_MAP[preset]) {
-        const offset = presetPosition(ZODIAC_PRESET_MAP[preset], new THREE.Vector3());
+      if (inZodiacRealView() && ZODIAC_RING_AU[preset] != null) {
+        const offset = zodiacPresetOffset(ZODIAC_RING_AU[preset], new THREE.Vector3());
         if (state.focus !== 'earth') { setFocus('earth', offset, ms); return; }
         startTween(offset, ms);
         return;
@@ -3086,6 +3295,8 @@
     function setInfoPanel(open) {
       dom.infoPanel.classList.toggle('collapsed', !open);
       dom.btnInfoToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      updateWheelLayout();
+      setTimeout(updateWheelLayout, 420);   // again once the panel's slide transition has ended
     }
 
     // ---- UI wiring -------------------------------------------------------------------
@@ -3508,7 +3719,6 @@
       const positions = computePositions(state.jd);
       currentSource = positions.source;
       updateBodies(positions, state.jd);
-      updateZodiac(state.jd, positions);
       updateOrbits(false);
       updateSun(timeMs / 1000);
       updateBelts(state.jd);
@@ -3517,6 +3727,7 @@
       controls.update();
       updateNearPlane();
 
+      updateZodiac(state.jd, positions);   // after the camera: the wheel's world radius depends on it
       updateScreenPositions();
       updateZodiacLabelPositions();
       updateMoonSystems();
@@ -3609,6 +3820,8 @@
       buildLabels();
       buildZodiacDisc();
       buildZodiacMarkers();
+      wheelReady = true;
+      updateWheelLayout();
       done++;
 
       wireUI();

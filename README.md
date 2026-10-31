@@ -231,11 +231,17 @@ with linear distances, following Earth from straight above: the planets,
 orbits, moons and belts are plotted at linear scale, so the planets themselves
 sit in their signs and the rays pass through them. Since a globe is a pixel
 across at that distance, each body is drawn as a fixed-size dot in its colour
-at its true position (the sprites true-size mode uses). The sign labels and
-rim markers ring the visible part of the ecliptic at any zoom, and the camera
-presets frame Earth from above: 1 the inner system out to Mars, 3 Saturn's
-distance (the default), 2 the whole disc out past Pluto; R returns there.
-Switching real scale off keeps the camera, so the two views compare in place.
+at its true position (the sprites true-size mode uses). The signs and the
+body markers sit on a wheel of fixed screen size around Earth, drawn with
+degree ticks, that zooming never changes: sign labels outside the ring, each
+body's marker on it with its tag inside, and a ray from Earth through the
+body to its marker. The wheel is sized to the part of the window clear of the
+title, the time controls and the Positions panel, and the camera's view
+offset puts Earth at its centre. The camera presets set what the wheel
+frames: 1 the inner system (1.6 AU on the ring), 3 Saturn's distance (11 AU,
+the default), 2 the whole disc out past Pluto (50 AU); R returns to the
+default. Switching real scale off keeps the camera, so the two views compare
+in place.
 
 API: `GET /api/range`, `GET /api/positions?jd=<UT Julian Date>` or
 `?iso=<UTC timestamp>` return heliocentric ecliptic J2000 x/y/z in AU (Moon
