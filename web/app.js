@@ -169,8 +169,19 @@
     // Real-scale zodiac view: straight above Earth, the half-height of the view about
     // 11 AU (mult = 1 / tan(fov / 2)), so Jupiter and Saturn are in view and the inner
     // system is still resolvable; rays and rim tags point the way to the rest.
-    zodiac: { elevation: 89.9, azimuth: 0, au: 11, mult: 2.4 }
+    zodiac: { elevation: 89.9, azimuth: 0, au: 11, mult: 2.4 },
+    zodiacInner: { elevation: 89.9, azimuth: 0, au: 2.6, mult: 2.4 },   // Sun, Mercury, Venus, Mars around Earth
+    zodiacFull: { elevation: 89.9, azimuth: 0, au: 42, mult: 2.4 }      // the whole disc, out past Pluto
   };
+  // In the real-scale zodiac view the camera presets frame Earth from above instead.
+  const ZODIAC_PRESET_MAP = { default: 'zodiac', inner: 'zodiacInner', full: 'zodiacFull', top: 'zodiac' };
+
+  // Body dots: the fixed-size sprite each body carries for true-size mode doubles as
+  // the body's mark in the real-scale zodiac view, where the globes are a pixel or
+  // less at any framing that shows the outer planets. Its drawn radius in CSS px
+  // (for label placement), and the globe radius above which it is not needed.
+  const DOT_RADIUS_PX = 5;
+  const DOT_FADE_PX = 7;
 
   // ---------------------------------------------------------------------------
   // Calendar helpers (proleptic Gregorian, astronomical year numbering)
@@ -424,6 +435,12 @@
         radius: zodiac.radius, ring: zodiac.ring, disc: !!zodiac.mesh,
         ariesRad: zodiac.uniforms ? zodiac.uniforms.uAries.value : NaN,
         markers: zodiac.markers.map((m) => ({ name: m.name, shown: m.shown, tropicalDeg: m.tropicalDeg })) }),
+      // Screen positions (CSS px) of the bodies and of the zodiac markers, for checking
+      // that at real scale each marker, its body and Earth are collinear on screen.
+      screen: () => ({
+        bodies: bodyList.map((rec) => ({ name: rec.name, x: rec.screen.x, y: rec.screen.y, r: rec.screen.r, visible: rec.screen.visible })),
+        markers: zodiac.markers.map((m) => ({ name: m.name, x: m.screen.x, y: m.screen.y, shown: m.shown, tropicalDeg: m.tropicalDeg }))
+      }),
       precision: () => ({ enabled: precision.enabled, checked: precision.checked, inflight: precision.inflight,
         lastFetchAt: precision.lastFetchAt, lastRequestedJd: precision.lastRequestedJd, hasExact: !!precision.exact,
         playing: state.playing, speedIndex: state.speedIndex })
@@ -448,6 +465,15 @@
     // zodiac overlay is shown at real scale; otherwise radii are compressed.
     function linearDistances() {
       return state.trueScale || (state.zodiac && state.zodiacReal);
+    }
+
+    function inZodiacRealView() {
+      return state.zodiac && state.zodiacReal;
+    }
+
+    // Fixed-size body dots are drawn in true-size mode and in the real-scale zodiac view.
+    function bodyDotsOn() {
+      return state.trueSize || inZodiacRealView();
     }
 
     function mapDistance(rAu) {
@@ -1145,7 +1171,7 @@
         rec.radius = r;
         rec.tilt.scale.setScalar(r);
         if (rec.material && rec.material.bumpMap) rec.material.bumpScale = 0.02 * r;
-        if (rec.marker) rec.marker.visible = state.trueSize && rec.visible;
+        if (rec.marker) rec.marker.visible = bodyDotsOn() && rec.visible;
       }
       if (sun.corona) {
         const r = bodyRadius('sun');
@@ -1173,7 +1199,7 @@
       if (orbits.pluto) orbits.pluto.line.visible = state.showOrbits && state.showPluto;
       for (const rec of bodyList) {
         if (rec.isMoon) continue;   // gated per frame in updateMoonSystems
-        if (rec.marker) rec.marker.visible = state.trueSize && rec.visible;
+        if (rec.marker) rec.marker.visible = bodyDotsOn() && rec.visible;
         if (rec.label) rec.label.classList.toggle('hidden', !rec.visible);
       }
       for (const sys of moonSystems) {
@@ -1963,7 +1989,7 @@
           m.visible = true;
           m.screen.visible = m.screen.inView;
           m.labelOn = labelsOn;
-          if (m.marker) m.marker.visible = state.trueSize;
+          if (m.marker) m.marker.visible = bodyDotsOn();
           const o = m.orbit;
           if (!o) continue;
           if (orbitsOn && !(Math.abs(state.jd - o.jdSampled) <= o.period / 4)) sampleMoonSystemOrbit(m, state.jd);
@@ -2473,6 +2499,7 @@
       const w = renderer.domElement.clientWidth;
       const h = renderer.domElement.clientHeight;
       const tanHalf = Math.tan(camera.fov * 0.5 * DEG);
+      const dots = bodyDotsOn();
       for (const rec of bodyList) {
         rec.group.getWorldPosition(worldV);
         const dist = worldV.distanceTo(camera.position);
@@ -2483,6 +2510,22 @@
         s.x = (projV.x * 0.5 + 0.5) * w;
         s.y = (-projV.y * 0.5 + 0.5) * h;
         s.r = dist > 0 ? (rec.radius / (dist * tanHalf)) * (h * 0.5) : 0;
+        // Body dot (see DOT_RADIUS_PX): always in true-size mode; in the real-scale
+        // zodiac view only while the globe itself is too small to see. Labels then
+        // stand off the dot rather than the globe. Planet moons are gated per frame
+        // in updateMoonSystems instead.
+        if (rec.marker && !rec.isMoon) {
+          let dot = dots && rec.visible && (state.trueSize || s.r < DOT_FADE_PX);
+          // Earth's Moon is drawn relative to Earth's size, so at a wide framing its
+          // dot would sit on Earth's: show it once the two have come apart on screen
+          // (Earth precedes the Moon in bodyList, so its screen position is current).
+          if (dot && rec.name === 'moon' && !state.trueSize && bodies.earth) {
+            const es = bodies.earth.screen;
+            dot = Math.hypot(s.x - es.x, s.y - es.y) >= 3 * DOT_RADIUS_PX;
+          }
+          rec.marker.visible = dot;
+          if (dot) s.r = Math.max(s.r, DOT_RADIUS_PX);
+        }
       }
     }
 
@@ -2698,12 +2741,23 @@
       syncInfoMoonRows();
     }
 
+    // In the real-scale zodiac view the Inner, Full and Top presets (and the default)
+    // frame Earth from straight above instead, refocusing Earth first if needed:
+    // the inner system out to Mars, the whole disc out past Pluto, Saturn's distance.
     function applyPreset(preset, duration) {
+      const ms = duration == null ? 1000 : duration;
+      if (inZodiacRealView() && ZODIAC_PRESET_MAP[preset]) {
+        const offset = presetPosition(ZODIAC_PRESET_MAP[preset], new THREE.Vector3());
+        if (state.focus !== 'earth') { setFocus('earth', offset, ms); return; }
+        startTween(offset, ms);
+        return;
+      }
       const offset = presetPosition(preset, new THREE.Vector3());
-      startTween(offset, duration == null ? 1000 : duration);
+      startTween(offset, ms);
     }
 
     function resetView() {
+      if (inZodiacRealView()) { enterZodiacRealView(); return; }   // the view's home is above Earth
       state.focus = null;
       dom.focusChip.hidden = true;
       controls.minDistance = 2;
