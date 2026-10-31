@@ -221,31 +221,27 @@ orbital phase). Planets are oriented by their IAU poles, so moons orbit in
 the same plane as the rings. For every planet except Earth the moons, their
 orbits and labels fade in only when you zoom in close to that planet.
 
-**Zodiac mode.** The Zodiac switch (panel header, settings, or the Z key)
+**Zodiac view.** The Zodiac switch (panel header, settings, or the Z key)
 draws the twelve tropical signs as sectors radiating from Earth in the
 ecliptic plane, oriented to the equinox of date so precession is included,
-with a marker and ray for each body along its true geocentric direction
-(needed because the compressed distance scale bends apparent directions from
-Earth). The Positions panel then shows geocentric tropical longitudes and
-signs, including the Sun's sign on the Earth row and the Moon's sign on its
-sub-row; `scripts/verify_zodiac.py` checks every body's sign against the
-engine's `AstroEngine.position(..., vertex='earth', zodiac='tropical')`.
-The Real scale switch beside it (settings, or Shift+Z) shows the same overlay
-with linear distances, following Earth from straight above: the planets,
-orbits, moons and belts are plotted at linear scale, so the planets themselves
-sit in their signs and the rays pass through them. Since a globe is a pixel
-across at that distance, each body is drawn as a fixed-size dot in its colour
-at its true position (the sprites true-size mode uses). The signs and the
-body markers sit on a wheel of fixed screen size around Earth, drawn with
-degree ticks, that zooming never changes: sign labels outside the ring, each
-body's marker on it with its tag inside, and a ray from Earth through the
+plots the scene (planets, orbits, moons, belts) at linear distances and
+follows Earth from straight above, so the planets themselves sit in their
+signs. Since a globe is a pixel across at that distance, each body is drawn
+as a fixed-size dot in its colour at its true position (the sprites true-size
+mode uses). The signs and a marker for each body sit on a wheel of fixed
+screen size around Earth, drawn with degree ticks, that zooming never
+changes: sign labels outside the ring, each body's marker on it at its
+geocentric longitude with its tag inside, and a ray from Earth through the
 body to its marker. The wheel is sized to the part of the window clear of the
 title, the time controls and the Positions panel, and the camera's view
 offset puts Earth at its centre. The camera presets set what the wheel
 frames: 1 the inner system (1.6 AU on the ring), 3 Saturn's distance (11 AU,
 the default), 2 the whole disc out past Pluto (50 AU); R returns to the
-default. Switching real scale off keeps the camera, so the two views compare
-in place.
+default; turning the view off keeps the camera where it is. The Positions
+panel then shows geocentric tropical longitudes and signs, including the
+Sun's sign on the Earth row and the Moon's sign on its sub-row;
+`scripts/verify_zodiac.py` checks every body's sign against the engine's
+`AstroEngine.position(..., vertex='earth', zodiac='tropical')`.
 
 API: `GET /api/range`, `GET /api/positions?jd=<UT Julian Date>` or
 `?iso=<UTC timestamp>` return heliocentric ecliptic J2000 x/y/z in AU (Moon

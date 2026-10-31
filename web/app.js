@@ -19,10 +19,11 @@
  * GPU (OrreryVisuals.orbitalBelt): the app only feeds them the time, the reference
  * planet's mean longitude and the distance mapping each frame. The optional zodiac
  * overlay (OrreryVisuals.zodiacDisc) is a disc of twelve sectors centred on Earth,
- * turned to the mean equinox of date from Ephemeris.equinoxLongitude, with a marker
- * on the disc for each body's direction as seen from Earth (the compressed distance
- * mapping does not preserve those directions for the drawn planets); while it is on,
- * the Positions panel shows geocentric tropical longitudes. The clock (state.jd)
+ * turned to the mean equinox of date from Ephemeris.equinoxLongitude. While it is on
+ * the scene is drawn at linear scale and the camera follows Earth from above, so the
+ * planets sit in their signs; the signs and a marker for each body's direction from
+ * Earth sit on a wheel of fixed screen size around Earth, and the Positions panel
+ * shows geocentric tropical longitudes. The clock (state.jd)
  * runs in UT; the date headline and the date form show and accept civil time in the
  * IANA zone chosen in the picker (state.timeZone, converted by TimeZones and kept in
  * localStorage), while the Julian Date in the subline stays UT.
@@ -177,8 +178,8 @@
     edge: { elevation: 1.5, azimuth: 0, au: 42, mult: 1.5 }
   };
 
-  // Real-scale zodiac view: the signs and the body markers sit on a wheel of fixed
-  // screen size around Earth, like a chart wheel, whatever the zoom. Its radius in
+  // Zodiac view: the signs and the body markers sit on a wheel of fixed screen
+  // size around Earth, like a chart wheel, whatever the zoom. Its radius in
   // CSS px comes from the part of the viewport clear of the title strip, the time
   // controls and the Positions panel, less room outside it for the sign labels, and
   // the camera's view offset puts Earth at its centre. The camera presets then set
@@ -192,14 +193,14 @@
   const WHEEL_ELEVATION = 89.9;  // camera elevation above the ecliptic in the view
   const ZODIAC_RING_AU = { default: 11, top: 11, inner: 1.6, full: 50 };
   // Zoom-out limit of the orbit controls: the usual one, and the ceiling the
-  // real-scale view may raise it to so the Full framing fits (the star sphere is
+  // zodiac view may raise it to so the Full framing fits (the star sphere is
   // at STAR_RADIUS, 6000; the camera must stay inside it).
   const ZOOM_MAX_DEFAULT = 3000;
   const ZOOM_MAX_WHEEL = 5800;
-  // The disc fades in over the first 4% of its radius about Earth; at real scale
-  // that is 2.2 AU and would blank the sector lines over the inner system, so the
-  // view fades it over this many screen px instead (just past Earth's dot) and
-  // draws the lines at this alpha (the compressed view keeps the shader defaults).
+  // The disc shader's default fade-in spans the first 4% of its radius about Earth;
+  // at linear scale that is 2.2 AU and would blank the sector lines over the inner
+  // system, so the view fades it over this many screen px instead (just past
+  // Earth's dot) and draws the lines at this alpha.
   const WHEEL_DISC_INNER_PX = 10;
   const WHEEL_LINE_ALPHA = 0.6;
   // Nominal sector line width in CSS px; the shader's soft edge makes the visible
@@ -207,7 +208,7 @@
   const WHEEL_LINE_CSS_PX = 0.5;
 
   // Body dots: the fixed-size sprite each body carries for true-size mode doubles as
-  // the body's mark in the real-scale zodiac view, where the globes are a pixel or
+  // the body's mark in the zodiac view, where the globes are a pixel or
   // less at any framing that shows the outer planets. Its drawn radius in CSS px
   // (for label placement), and the globe radius above which it is not needed.
   const DOT_RADIUS_PX = 5;
@@ -404,9 +405,6 @@
       optPlutoPanel: $('opt-pluto-panel'),
       optZodiac: $('opt-zodiac'),
       optZodiacPanel: $('opt-zodiac-panel'),
-      optZodiacReal: $('opt-zodiac-real'),
-      optZodiacRealPanel: $('opt-zodiac-real-panel'),
-      zodiacRealWrap: $('zodiac-real-wrap'),
       zodiacBadge: $('zodiac-badge'),
       titleBlock: $('title-block'),
       btnInfoHelp: $('btn-info-help'),
@@ -446,8 +444,7 @@
       showPluto: true,
       showMoon: true,
       showPlanetMoons: true,
-      zodiac: false,           // tropical zodiac overlay; the panel then shows geocentric signs
-      zodiacReal: false,       // zodiac at real scale: linear distances, Earth followed from above
+      zodiac: false,           // tropical zodiac view: linear scale, Earth followed from above, geocentric panel
       focus: null,             // body name being followed, or null for the Sun
       hover: null,             // body name under the pointer
       lastJdChangeAt: 0,       // performance.now() of the last jd change
@@ -467,7 +464,7 @@
       subsolar: () => (typeof Eph.subsolarPoint === 'function' ? Eph.subsolarPoint(state.jd) : null),
       libration: () => (typeof Eph.moonLibration === 'function' ? Eph.moonLibration(state.jd) : null),
       jd: () => state.jd,
-      zodiac: () => ({ on: state.zodiac, real: state.zodiacReal, linear: linearDistances(), equinoxDeg: zodiac.equinoxDeg,
+      zodiac: () => ({ on: state.zodiac, linear: linearDistances(), equinoxDeg: zodiac.equinoxDeg,
         radius: zodiac.radius, ring: zodiac.ring, disc: !!zodiac.mesh, wheel: zodiac.wheel,
         ariesRad: zodiac.uniforms ? zodiac.uniforms.uAries.value : NaN,
         markers: zodiac.markers.map((m) => ({ name: m.name, shown: m.shown, tropicalDeg: m.tropicalDeg })) }),
@@ -502,18 +499,18 @@
     // ---- Distance mapping -------------------------------------------------------
 
     // Linear (true-scale) distances are on when the user asks for them or while the
-    // zodiac overlay is shown at real scale; otherwise radii are compressed.
+    // zodiac view is on; otherwise radii are compressed.
     function linearDistances() {
-      return state.trueScale || (state.zodiac && state.zodiacReal);
+      return state.trueScale || state.zodiac;
     }
 
-    function inZodiacRealView() {
-      return state.zodiac && state.zodiacReal;
+    function zodiacOn() {
+      return state.zodiac;
     }
 
-    // Fixed-size body dots are drawn in true-size mode and in the real-scale zodiac view.
+    // Fixed-size body dots are drawn in true-size mode and in the zodiac view.
     function bodyDotsOn() {
-      return state.trueSize || inZodiacRealView();
+      return state.trueSize || state.zodiac;
     }
 
     function mapDistance(rAu) {
@@ -524,7 +521,7 @@
     // Everything that bakes mapDistance in: the orbit lines, the belts (mapping
     // uniforms, or a rebuild of a static fallback belt) and the zodiac disc. Called
     // whenever the effective mapping flips, from the true-scale switch or the
-    // real-scale zodiac view. With recenter, an unfocused camera returns to the
+    // zodiac view. With recenter, an unfocused camera returns to the
     // default view, which is sized through the new mapping.
     function applyDistanceMapping(recenter) {
       updateOrbits(true);
@@ -1546,39 +1543,29 @@
     // labels are HTML like the body labels and are placed with them (see Labels).
     // Without zodiacDisc the markers, the labels and the panel figures still work.
     //
-    // Body markers: the compressed distance mapping (mapDistance, 22 r^0.6) is radial
-    // about the SUN, so it does not preserve directions from Earth: a planet's drawn
-    // Earth-to-planet direction is off by up to about 14 deg (Mercury, Venus, Mars)
-    // and the planet can be drawn in the wrong sector while the panel says otherwise.
-    // So each body also gets a dot on the disc, with a ray from Earth, at its true
-    // geocentric ecliptic longitude; the dots are the reading, the globes the scenery.
-    // (True scale is linear, and the Sun's and the Moon's drawn directions are exact
-    // in both mappings.)
-    //
-    // Real-scale view (state.zodiacReal): the same overlay with linear distances, so
-    // the drawn planets themselves sit in their signs and the rays pass through them.
-    // Entering it follows Earth from straight above at the 'zodiac' camera preset.
-    // The disc is then 1200 units across and its rim is out of view for anything
-    // nearer than Neptune, so the sign labels and the body markers leave the rim for
-    // a wheel of fixed screen size around Earth (zodiac.wheel, zodiac.ring): a drawn
-    // ring with degree ticks, the sign labels just outside it, the marker dots on it
-    // with their tags just inside, Earth at its centre. Zooming changes what the
-    // wheel frames, never the wheel.
+    // The view holds the distance mapping linear (the compressed mapping is radial
+    // about the Sun and bends directions from Earth by up to about 14 deg, which
+    // would draw planets in the wrong sector) and follows Earth from straight above.
+    // The disc is 1200 units across and its rim is out of view for anything nearer
+    // than Neptune, so the sign labels and a marker for each body sit on a wheel of
+    // fixed screen size around Earth (zodiac.wheel, zodiac.ring): a drawn ring with
+    // degree ticks, the sign labels just outside it, the marker dots on it at each
+    // body's geocentric ecliptic longitude with their tags just inside, a ray from
+    // Earth through the body to its dot, Earth at its centre. Zooming changes what
+    // the wheel frames, never the wheel. (The Moon is drawn relative to Earth's size,
+    // not on the AU scale, so its marker, not its globe, shows its sign.)
 
     // Disc radius in AU. The disc is centred on Earth, so Pluto's distance FROM EARTH
     // matters: it reaches 48.8 AU near aphelion (2110s). The shader fades the rim from
     // 0.82 of the radius, i.e. from 45 AU, so Pluto never leaves the lit part of the disc.
     const ZODIAC_RADIUS_AU = 55;
-    const ZODIAC_LABEL_FRACTION = 0.9;    // sign labels sit at this fraction of the disc radius
-    const ZODIAC_MARKER_FRACTION = 0.8;   // body markers sit at this fraction (about Pluto's drawn orbit)
     const ZODIAC_MARKER_PX = 4;           // screen radius of a marker dot, for the tag placement
-    // (In the real-scale view both fractions are 1: labels and markers sit on the wheel.)
     // Bodies with a geocentric marker, in Positions-panel order (Earth is the centre).
     const ZODIAC_MARKER_BODIES = ['sun', 'moon', 'mercury', 'venus', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune', 'pluto'];
     const zodiac = {
       mesh: null, uniforms: null, radius: 0, equinoxDeg: 0, lastJd: NaN, labels: [], warned: false,
       ring: 0,      // rim radius for this frame's sign labels and markers (see updateZodiacRing)
-      wheel: { cx: 0, cy: 0, px: 0 },   // real-scale view: the wheel's screen centre and radius (CSS px)
+      wheel: { cx: 0, cy: 0, px: 0 },   // the wheel's screen centre and radius (CSS px)
       ringLine: null, ticks: null,      // the drawn wheel: a LineLoop and 36 degree ticks
       rays: null,   // LineSegments, one segment per marker from Earth to the dot
       // Marker records carry the same label fields as the bodies (label, labelBox,
@@ -1699,7 +1686,7 @@
       buildZodiacWheel();
     }
 
-    // The drawn wheel of the real-scale view: a unit circle in the ecliptic plane and
+    // The drawn wheel: a unit circle in the ecliptic plane and
     // 36 radial ticks every 10 deg from 0 deg Aries, longer at the sign boundaries;
     // both are moved to Earth and scaled to zodiac.ring each frame, the ticks turned
     // to the equinox of date. Hidden outside the view.
@@ -1784,57 +1771,42 @@
         zodiac.uniforms.uAries.value = eq * DEG;
       }
       updateZodiacRing(earthPos);
-      const wheelOn = inZodiacRealView();
-      if (zodiac.mesh) updateZodiacDiscFade(earthPos, wheelOn);
+      if (zodiac.mesh) updateZodiacDiscFade(earthPos);
       if (zodiac.ringLine) {
-        zodiac.ringLine.visible = wheelOn;
-        zodiac.ticks.visible = wheelOn;
-        if (wheelOn) {
-          zodiac.ringLine.position.copy(earthPos);
-          zodiac.ringLine.scale.setScalar(zodiac.ring);
-          zodiac.ticks.position.copy(earthPos);
-          zodiac.ticks.scale.setScalar(zodiac.ring);
-          zodiac.ticks.rotation.y = eq * DEG;   // local +x (0 deg Aries) to the equinox's J2000 longitude
-        }
+        zodiac.ringLine.visible = true;
+        zodiac.ticks.visible = true;
+        zodiac.ringLine.position.copy(earthPos);
+        zodiac.ringLine.scale.setScalar(zodiac.ring);
+        zodiac.ticks.position.copy(earthPos);
+        zodiac.ticks.scale.setScalar(zodiac.ring);
+        zodiac.ticks.rotation.y = eq * DEG;   // local +x (0 deg Aries) to the equinox's J2000 longitude
       }
       if (positions) updateZodiacMarkers(positions, earthPos, eq);
     }
 
-    // Rim radius for the sign labels and the body markers. Compressed: the disc
-    // radius, whose rim is in view from the default cameras. Real scale: the world
-    // radius that the wheel's fixed screen radius subtends at Earth's depth, so the
-    // wheel holds its size on screen through any zoom (updateZodiac runs after the
-    // camera update in the frame, so there is no lag).
+    // The wheel's radius in world units: what its fixed screen radius subtends at
+    // Earth's depth, so the wheel holds its size on screen through any zoom
+    // (updateZodiac runs after the camera update in the frame, so there is no lag).
     function updateZodiacRing(earthPos) {
-      let ring = zodiac.radius;
-      if (inZodiacRealView()) {
-        const h = renderer.domElement.clientHeight;
-        const camDist = camera.position.distanceTo(earthPos);
-        ring = Math.max(1e-3, (zodiac.wheel.px / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
-      }
-      zodiac.ring = ring;
+      const h = renderer.domElement.clientHeight;
+      const camDist = camera.position.distanceTo(earthPos);
+      zodiac.ring = Math.max(1e-3, (zodiac.wheel.px / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
     }
 
-    // Inner fade and line strength of the disc (see WHEEL_DISC_INNER_PX). Real
-    // scale: the fade spans a few screen px at Earth's depth, so the sector lines
-    // run in to Earth's dot at any zoom; otherwise the shader defaults.
-    function updateZodiacDiscFade(earthPos, wheelOn) {
+    // Inner fade and line strength of the disc (see WHEEL_DISC_INNER_PX): the fade
+    // spans a few screen px at Earth's depth, so the sector lines run in to Earth's
+    // dot at any zoom.
+    function updateZodiacDiscFade(earthPos) {
       const u = zodiac.uniforms;
       if (!u.uInner || !u.uLineAlpha) return;   // older visuals.js
-      if (wheelOn) {
-        const h = renderer.domElement.clientHeight;
-        const camDist = camera.position.distanceTo(earthPos);
-        u.uInner.value = Math.max(1e-4, (WHEEL_DISC_INNER_PX / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
-        u.uLineAlpha.value = WHEEL_LINE_ALPHA;
-        if (u.uLineWidth) u.uLineWidth.value = WHEEL_LINE_CSS_PX * renderer.getPixelRatio();
-      } else {
-        u.uInner.value = 0.04 * zodiac.radius;
-        u.uLineAlpha.value = 0.35;
-        if (u.uLineWidth) u.uLineWidth.value = 0.75;
-      }
+      const h = renderer.domElement.clientHeight;
+      const camDist = camera.position.distanceTo(earthPos);
+      u.uInner.value = Math.max(1e-4, (WHEEL_DISC_INNER_PX / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
+      u.uLineAlpha.value = WHEEL_LINE_ALPHA;
+      if (u.uLineWidth) u.uLineWidth.value = WHEEL_LINE_CSS_PX * renderer.getPixelRatio();
     }
 
-    // ---- Wheel layout (real-scale view) ----
+    // ---- Wheel layout ----
     //
     // The wheel's centre and radius in CSS px from the part of the viewport that
     // the fixed UI leaves free. Recomputed on resize, when the time controls change
@@ -1871,12 +1843,12 @@
       updateZoomRange();
     }
 
-    // In the real-scale view the camera's frustum is shifted so that its target,
+    // In the zodiac view the camera's frustum is shifted so that its target,
     // Earth, projects to the wheel's centre; projection, picking and labels follow.
     function applyViewOffset() {
       const w = renderer.domElement.clientWidth;
       const h = renderer.domElement.clientHeight;
-      if (inZodiacRealView() && w && h && wheelReady) {
+      if (zodiacOn() && w && h && wheelReady) {
         camera.setViewOffset(w, h, w * 0.5 - zodiac.wheel.cx, h * 0.5 - zodiac.wheel.cy, w, h);
       } else if (camera.view && camera.view.enabled) {
         camera.clearViewOffset();
@@ -1893,12 +1865,12 @@
       return out.set(0, Math.sin(el) * dist, Math.cos(el) * dist);
     }
 
-    // The orbit controls' zoom-out limit: in the real-scale view far enough for the
+    // The orbit controls' zoom-out limit: in the zodiac view far enough for the
     // Full framing (a small wheel on a tall window needs a distant camera), else the
     // default. Called with the wheel layout and on leaving the view.
     const zoomRangeV = new THREE.Vector3();
     function updateZoomRange() {
-      if (inZodiacRealView() && wheelReady) {
+      if (zodiacOn() && wheelReady) {
         const full = zodiacPresetOffset(ZODIAC_RING_AU.full, zoomRangeV).length();
         controls.maxDistance = clamp(full * 1.05, ZOOM_MAX_DEFAULT, ZOOM_MAX_WHEEL);
       } else {
@@ -1906,7 +1878,7 @@
       }
     }
 
-    // Marker i sits at Earth + ZODIAC_MARKER_FRACTION * ring along the body's
+    // Marker i sits on the wheel, Earth + ring along the body's
     // geocentric ecliptic longitude a (J2000; scene direction (cos a, 0, -sin a), the
     // same angle the disc shader sectors), and its ray runs from Earth to it. The
     // geocentric vectors come from the frame's heliocentric positions: Sun = -Earth,
@@ -1916,7 +1888,7 @@
     function updateZodiacMarkers(positions, earthPos, eq) {
       const b = positions.bodies;
       const e = b.earth;
-      const r = inZodiacRealView() ? zodiac.ring : zodiac.ring * ZODIAC_MARKER_FRACTION;
+      const r = zodiac.ring;
       const rayAttr = zodiac.rays ? zodiac.rays.geometry.attributes.position : null;
       const ray = rayAttr ? rayAttr.array : null;
       for (let i = 0; i < zodiac.markers.length; i++) {
@@ -1936,10 +1908,10 @@
           m.tropicalDeg = wrapLon(a / DEG - eq);
           m.world.set(earthPos.x + r * ca, earthPos.y, earthPos.z - r * sa);
           if (m.sprite) m.sprite.position.copy(m.world);
-          // At real scale the drawn direction from Earth is the true one, so the ray
-          // runs on past the marker to the body itself when the body lies beyond the
-          // rim (the Moon is drawn relative to Earth's size, not on the AU scale).
-          if (state.zodiacReal && m.name !== 'moon') rayR = Math.max(r, mapDistance(Math.hypot(gx, gy)));
+          // The scene is at linear scale, so the drawn direction from Earth is the true
+          // one and the ray runs on past the marker to the body itself when the body
+          // lies beyond the wheel (not for the Moon, drawn relative to Earth's size).
+          if (m.name !== 'moon') rayR = Math.max(r, mapDistance(Math.hypot(gx, gy)));
         } else {
           m.tropicalDeg = NaN;
         }
@@ -1959,8 +1931,9 @@
 
     // Zodiac can be switched from the settings popover, the Positions panel header
     // or the Z key; both switches, the disc, the labels and the panel follow one state.
-    // Switching it with the real-scale option on also flips the distance mapping
-    // and, when turning on, enters the real-scale view.
+    // Turning it on holds the distance mapping linear and enters the view (Earth
+    // followed from above); turning it off returns the mapping to the true-scale
+    // setting and keeps the camera where it is.
     function setZodiac(on) {
       const wasLinear = linearDistances();
       state.zodiac = !!on;
@@ -1979,45 +1952,21 @@
       if (linearDistances() !== wasLinear) applyDistanceMapping(false);
       applyViewOffset();
       updateZoomRange();
-      if (state.zodiac && state.zodiacReal) enterZodiacRealView();
+      if (state.zodiac) enterZodiacView();
       zodiac.lastJd = NaN;
       updateZodiac(state.jd);
       state.lastInfoUpdate = 0;   // the panel swaps heliocentric and geocentric figures at once
     }
 
-    // The real-scale option (settings, the panel's Real scale switch, Shift+Z).
-    // Turning it on with the overlay off turns the overlay on as well. Turning it
-    // off keeps the overlay, the Earth focus and the camera; only the mapping returns
-    // to the user's true-scale setting, so the two views can be compared in place.
-    function setZodiacReal(real) {
-      const wasLinear = linearDistances();
-      state.zodiacReal = !!real;
-      if (state.zodiacReal && !state.zodiac) { setZodiac(true); return; }   // handles the mapping and the view
-      syncZodiacUI();
-      if (linearDistances() !== wasLinear) applyDistanceMapping(false);
-      applyViewOffset();
-      updateZoomRange();
-      if (state.zodiac && state.zodiacReal) enterZodiacRealView();
-      zodiac.lastJd = NaN;
-      updateZodiac(state.jd);
-    }
-
-    // Every zodiac control mirrors the state: both overlay switches, both real-scale
-    // switches (the panel's only shows while the overlay is on) and the badge.
+    // Both zodiac switches and the badge mirror the state.
     function syncZodiacUI() {
       if (dom.optZodiac) dom.optZodiac.checked = state.zodiac;
       if (dom.optZodiacPanel) dom.optZodiacPanel.checked = state.zodiac;
-      if (dom.optZodiacReal) dom.optZodiacReal.checked = state.zodiacReal;
-      if (dom.optZodiacRealPanel) dom.optZodiacRealPanel.checked = state.zodiacReal;
-      if (dom.zodiacRealWrap) dom.zodiacRealWrap.hidden = !state.zodiac;
-      if (dom.zodiacBadge) {
-        dom.zodiacBadge.hidden = !state.zodiac;
-        dom.zodiacBadge.textContent = state.zodiacReal ? 'geocentric · tropical · real scale' : 'geocentric · tropical';
-      }
+      if (dom.zodiacBadge) dom.zodiacBadge.hidden = !state.zodiac;
     }
 
     // Follow Earth from straight above, with Saturn's distance on the wheel's ring.
-    function enterZodiacRealView() {
+    function enterZodiacView() {
       updateWheelLayout();
       setFocus('earth', zodiacPresetOffset(ZODIAC_RING_AU.default, new THREE.Vector3()), 1100);
     }
@@ -2796,7 +2745,7 @@
       const earthRec = bodies.earth;
       const earthPos = earthRec.group.position;
       const ex = earthRec.screen.x, ey = earthRec.screen.y;
-      const r = inZodiacRealView() ? zodiac.ring : zodiac.ring * ZODIAC_LABEL_FRACTION;
+      const r = zodiac.ring;
       const eq = equinoxOfDate(state.jd);
       for (let k = 0; k < zodiac.labels.length; k++) {
         const z = zodiac.labels[k];
@@ -2845,8 +2794,8 @@
         s.x = (projV.x * 0.5 + 0.5) * w;
         s.y = (-projV.y * 0.5 + 0.5) * h;
         s.r = dist > 0 ? (rec.radius / (dist * tanHalf)) * (h * 0.5) : 0;
-        // Body dot (see DOT_RADIUS_PX): always in true-size mode; in the real-scale
-        // zodiac view only while the globe itself is too small to see. Labels then
+        // Body dot (see DOT_RADIUS_PX): always in true-size mode; in the zodiac
+        // view only while the globe itself is too small to see. Labels then
         // stand off the dot rather than the globe. Planet moons are gated per frame
         // in updateMoonSystems instead.
         if (rec.marker && !rec.isMoon) {
@@ -2967,7 +2916,7 @@
       return true;
     }
 
-    // Wheel (real-scale view): a sign label hugs the ring from outside at its
+    // Wheel: a sign label hugs the ring from outside at its
     // sector's middle and is never displaced (it is placed first; the bodies' labels
     // avoid it); a marker tag hugs its dot from inside, falling back to the usual
     // search around the dot when that slot is taken.
@@ -3007,7 +2956,7 @@
         return b.screen.r - a.screen.r;
       });
       placedCount = 0;
-      const wheelOn = state.zodiac && inZodiacRealView();
+      const wheelOn = state.zodiac;
       // On the wheel the signs are fixed furniture: placed first, so every other
       // label keeps clear of them.
       if (wheelOn) {
@@ -3020,23 +2969,15 @@
       for (const rec of labelOrder) {
         if (placeLabel(rec, w, h, false)) rec.label.classList.toggle('selected', state.focus === rec.name);
       }
-      // The zodiac marker tags come after the bodies: on the wheel just inside the
-      // dot, else in the first free slot around it; a tag hides when crowded (its
-      // dot still shows the direction). In the compressed view the signs come last
-      // and fall back to their anchors rather than hide. Off-screen anchors are hidden.
-      if (state.zodiac) {
+      // The zodiac marker tags come after the bodies: just inside the dot on the
+      // wheel, else in the first free slot around it; a tag hides when crowded (its
+      // dot still shows the direction). Off-screen anchors are hidden.
+      if (wheelOn) {
         for (const m of zodiac.markers) {
           if (!m.label) continue;
           if (!m.screen.visible) { hideLabel(m); continue; }
           if (m.labelBox.w === 0) measureLabels();
-          if (!(wheelOn && placeTagOnWheel(m, w, h))) placeLabel(m, w, h, false);
-        }
-        if (!wheelOn) {
-          for (const z of zodiac.labels) {
-            if (!z.screen.visible) { hideLabel(z); continue; }
-            if (z.labelBox.w === 0) measureLabels();
-            placeLabel(z, w, h, true);
-          }
+          if (!placeTagOnWheel(m, w, h)) placeLabel(m, w, h, false);
         }
       }
     }
@@ -3125,12 +3066,12 @@
       syncInfoMoonRows();
     }
 
-    // In the real-scale zodiac view the Inner, Full and Top presets (and the default)
+    // In the zodiac view the Inner, Full and Top presets (and the default)
     // frame Earth from straight above instead, refocusing Earth first if needed:
     // the inner system out to Mars, the whole disc out past Pluto, Saturn's distance.
     function applyPreset(preset, duration) {
       const ms = duration == null ? 1000 : duration;
-      if (inZodiacRealView() && ZODIAC_RING_AU[preset] != null) {
+      if (zodiacOn() && ZODIAC_RING_AU[preset] != null) {
         const offset = zodiacPresetOffset(ZODIAC_RING_AU[preset], new THREE.Vector3());
         if (state.focus !== 'earth') { setFocus('earth', offset, ms); return; }
         startTween(offset, ms);
@@ -3141,7 +3082,7 @@
     }
 
     function resetView() {
-      if (inZodiacRealView()) { enterZodiacRealView(); return; }   // the view's home is above Earth
+      if (zodiacOn()) { enterZodiacView(); return; }   // the view's home is above Earth
       state.focus = null;
       dom.focusChip.hidden = true;
       controls.minDistance = 2;
@@ -3552,7 +3493,7 @@
         case 'KeyR': resetView(); break;
         case 'KeyL': dom.optLabels.checked = !dom.optLabels.checked; dom.optLabels.dispatchEvent(new Event('change')); break;
         case 'KeyO': dom.optOrbits.checked = !dom.optOrbits.checked; dom.optOrbits.dispatchEvent(new Event('change')); break;
-        case 'KeyZ': if (ev.shiftKey) setZodiacReal(!state.zodiacReal); else setZodiac(!state.zodiac); break;
+        case 'KeyZ': setZodiac(!state.zodiac); break;
         case 'KeyH': togglePopover('help'); break;
         case 'Digit1': applyPreset('inner'); break;
         case 'Digit2': applyPreset('full'); break;
@@ -3647,7 +3588,7 @@
       dom.optTrueScale.addEventListener('change', () => {
         const wasLinear = linearDistances();
         state.trueScale = dom.optTrueScale.checked;
-        if (linearDistances() !== wasLinear) applyDistanceMapping(true);   // no-op while the real-scale zodiac view holds the mapping linear
+        if (linearDistances() !== wasLinear) applyDistanceMapping(true);   // no-op while the zodiac view holds the mapping linear
       });
       dom.optTrueSize.addEventListener('change', () => {
         state.trueSize = dom.optTrueSize.checked;
@@ -3660,8 +3601,6 @@
       dom.optPlutoPanel.addEventListener('change', () => setShowPluto(dom.optPlutoPanel.checked));
       if (dom.optZodiac) dom.optZodiac.addEventListener('change', () => setZodiac(dom.optZodiac.checked));
       if (dom.optZodiacPanel) dom.optZodiacPanel.addEventListener('change', () => setZodiac(dom.optZodiacPanel.checked));
-      if (dom.optZodiacReal) dom.optZodiacReal.addEventListener('change', () => setZodiacReal(dom.optZodiacReal.checked));
-      if (dom.optZodiacRealPanel) dom.optZodiacRealPanel.addEventListener('change', () => setZodiacReal(dom.optZodiacRealPanel.checked));
       dom.optMoon.addEventListener('change', () => { state.showMoon = dom.optMoon.checked; applyBodyVisibility(); });
       if (dom.optPlanetMoons) {
         dom.optPlanetMoons.addEventListener('change', () => { state.showPlanetMoons = dom.optPlanetMoons.checked; applyBodyVisibility(); });
