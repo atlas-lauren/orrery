@@ -1554,6 +1554,7 @@
     'uniform float uOpacity;',
     'uniform float uInner;',       /* world radius about the centre over which the disc fades in */
     'uniform float uLineAlpha;',   /* alpha of the sector boundary lines before uOpacity */
+    'uniform float uLineWidth;',   /* width of those lines in device pixels */
     'uniform vec3 uColorA;',
     'uniform vec3 uColorB;',
     'uniform vec3 uLine;',
@@ -1574,7 +1575,7 @@
     '  float arc = r * min(frac, 1.0 - frac) * SPAN;',
     '  vec2 tang = vec2(vPos.y, -vPos.x) / max(r, 0.000001);',
     '  float pxArc = abs(dot(tang, dFdx(vPos))) + abs(dot(tang, dFdy(vPos)));',
-    '  float lw = pxArc * 0.75;',
+    '  float lw = pxArc * uLineWidth;',
     '  float line = 1.0 - smoothstep(lw * 0.5, lw * 1.5, arc);',
     '  float frac10 = fract(s / TICK);',
     '  float arc10 = r * min(frac10, 1.0 - frac10) * TICK;',
@@ -1926,6 +1927,7 @@
         uOpacity: { value: opts.opacity === undefined ? 0.3 : opts.opacity }   /* the frame is sRGB-encoded after rendering, so low linear alphas read ~4x stronger */,
         uInner: { value: opts.inner === undefined ? 0.04 * radius : opts.inner },
         uLineAlpha: { value: opts.lineAlpha === undefined ? 0.35 : opts.lineAlpha },
+        uLineWidth: { value: opts.lineWidth === undefined ? 0.75 : opts.lineWidth },
         uColorA: { value: new T.Color(opts.colorA === undefined ? 0xc9a24a : opts.colorA) },
         uColorB: { value: new T.Color(opts.colorB === undefined ? 0x6b78d6 : opts.colorB) },
         uLine: { value: new T.Color(opts.line === undefined ? 0xd9d2b8 : opts.line) }

@@ -23,6 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Stamp the script URLs with the commit so browsers and the Pages CDN never
+      # pair a fresh app.js with a cached visuals.js after a deploy.
+      - name: Version the script URLs
+        run: sed -i "s/__BUILD__/${GITHUB_SHA::10}/g" web/index.html
       - uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -903,10 +903,13 @@
   <div id="loading-status">Loading three.js</div>
 </div>
 
-<script src="ephemeris.js"></script>
-<script src="moons.js"></script>
-<script src="visuals.js"></script>
-<script src="app.js"></script>
+<!-- __BUILD__ is replaced with the commit hash when GitHub Pages is published, so a
+     new deploy never pairs a fresh app.js with a cached visuals.js (Pages caches
+     for ten minutes); the dev server serves the literal, which is harmless. -->
+<script src="ephemeris.js?v=__BUILD__"></script>
+<script src="moons.js?v=__BUILD__"></script>
+<script src="visuals.js?v=__BUILD__"></script>
+<script src="app.js?v=__BUILD__"></script>
 <script type="importmap">
 {"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
 </script>

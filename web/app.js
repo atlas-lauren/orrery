@@ -191,8 +191,11 @@
   // that is 2.2 AU and would blank the sector lines over the inner system, so the
   // view fades it over this many screen px instead (just past Earth's dot) and
   // draws the lines at this alpha (the compressed view keeps the shader defaults).
-  const WHEEL_DISC_INNER_PX = 8;
-  const WHEEL_LINE_ALPHA = 0.65;
+  const WHEEL_DISC_INNER_PX = 10;
+  const WHEEL_LINE_ALPHA = 0.6;
+  // Nominal sector line width in CSS px; the shader's soft edge makes the visible
+  // line about 2.5x this (its default, 0.75 device px, is hair-thin on HiDPI).
+  const WHEEL_LINE_CSS_PX = 0.5;
 
   // Body dots: the fixed-size sprite each body carries for true-size mode doubles as
   // the body's mark in the real-scale zodiac view, where the globes are a pixel or
@@ -1809,9 +1812,11 @@
         const camDist = camera.position.distanceTo(earthPos);
         u.uInner.value = Math.max(1e-4, (WHEEL_DISC_INNER_PX / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
         u.uLineAlpha.value = WHEEL_LINE_ALPHA;
+        if (u.uLineWidth) u.uLineWidth.value = WHEEL_LINE_CSS_PX * renderer.getPixelRatio();
       } else {
         u.uInner.value = 0.04 * zodiac.radius;
         u.uLineAlpha.value = 0.35;
+        if (u.uLineWidth) u.uLineWidth.value = 0.75;
       }
     }
 
