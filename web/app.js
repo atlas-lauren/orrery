@@ -4,10 +4,12 @@
  * Classic script (no modules). Exposes a single global, window.startOrrery(bundle),
  * which the inline bootstrap module in index.html calls once three.js and its addons
  * have loaded. Depends on window.Ephemeris (ephemeris.js) and, optionally,
- * window.OrreryVisuals (visuals.js) and window.Moons (moons.js). Every visuals call
- * is guarded so the app still runs with plain materials if a generator is missing or
- * throws; without moons.js no planet moons are built and the planets fall back to
- * the old rotation about the scene X axis instead of their IAU pole directions.
+ * window.OrreryVisuals (visuals.js), window.Moons (moons.js) and window.TimeZones
+ * (timezone.js). Every visuals call is guarded so the app still runs with plain
+ * materials if a generator is missing or throws; without moons.js no planet moons
+ * are built and the planets fall back to the old rotation about the scene X axis
+ * instead of their IAU pole directions; without timezone.js the clock is shown in
+ * UT and the time-zone picker is hidden.
  * Earth starts with its procedural textures, then streams in NASA Blue Marble
  * imagery after start-up, and is oriented from Ephemeris.earthOrientation (mean
  * pole and equinox of date, Greenwich sidereal time) when that function exists.
@@ -20,10 +22,14 @@
  * turned to the mean equinox of date from Ephemeris.equinoxLongitude, with a marker
  * on the disc for each body's direction as seen from Earth (the compressed distance
  * mapping does not preserve those directions for the drawn planets); while it is on,
- * the Positions panel shows geocentric tropical longitudes.
+ * the Positions panel shows geocentric tropical longitudes. The clock (state.jd)
+ * runs in UT; the date headline and the date form show and accept civil time in the
+ * IANA zone chosen in the picker (state.timeZone, converted by TimeZones and kept in
+ * localStorage), while the Julian Date in the subline stays UT.
  *
  * Sections: constants, calendar helpers, startOrrery (state, moon catalogue, scene
- * setup, bodies, orbits, moon systems, precision mode, camera, UI, frame loop).
+ * setup, bodies, orbits, moon systems, precision mode, time engine, time zone, date
+ * display, camera, UI, frame loop).
  */
 (function () {
   'use strict';
@@ -135,6 +141,9 @@
   const ZODIAC_GLYPHS = ['\u2648', '\u2649', '\u264A', '\u264B', '\u264C', '\u264D', '\u264E', '\u264F', '\u2650', '\u2651', '\u2652', '\u2653'];
   const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  // localStorage key of the chosen time zone (an IANA name). Declared here, not in
+  // startOrrery, because loadTimeZone() runs while the state object is being built.
+  const TZ_STORAGE_KEY = 'orrery.timeZone';
 
   const CAMERA_FOV = 45;
   const CAMERA_NEAR = 0.05;          // initial value; frame() rescales it with the orbit distance
@@ -222,9 +231,9 @@
     return year <= 0 ? (1 - year) + ' BCE' : String(year);
   }
 
-  function weekdayName(jd) {
-    const w = ((Math.floor(jd + 1.5) % 7) + 7) % 7;
-    return WEEKDAYS[w];
+  // Day of the week of a UT instant, 0 = Sunday (an index into WEEKDAYS).
+  function weekdayIndex(jd) {
+    return ((Math.floor(jd + 1.5) % 7) + 7) % 7;
   }
 
   function pad2(n) {
@@ -279,6 +288,7 @@
     const Eph = window.Ephemeris;
     const Vis = window.OrreryVisuals || null;
     const Moons = window.Moons || null;
+    const TZ = window.TimeZones || null;
     if (!Eph) throw new Error('window.Ephemeris is not available');
 
     const JD_MIN = Eph.range.jdMin;
@@ -373,6 +383,8 @@
       inDay: $('in-day'),
       inHour: $('in-hour'),
       inMinute: $('in-minute'),
+      tzSelect: $('tz-select'),
+      tzFallback: $('tz-fallback'),
       btnApply: $('btn-apply'),
       inDatetime: $('in-datetime'),
       infoPanel: $('info-panel'),
@@ -442,9 +454,11 @@
       lastInfoUpdate: 0,
       lastInputSync: 0,
       fineScrub: false,
-      infoPanelUserSet: false
+      infoPanelUserSet: false,
+      timeZone: 'UTC'          // IANA zone of the headline and date form; set from storage below
     };
     state.jd = clamp(state.jd, JD_MIN, JD_MAX);
+    state.timeZone = loadTimeZone();
 
     // Debug handle: the geographic point with the Sun overhead and the selenographic
     // point with the Earth overhead at the current date are the ground truth the Earth
@@ -2366,6 +2380,8 @@
 
     function stepDays(n) { setJd(state.jd + n); }
 
+    // Month and year steps, like day steps, work on the UT calendar whatever zone the
+    // headline shows.
     function stepMonths(n) {
       const c = Eph.civilFromJd(state.jd);
       let m = c.month - 1 + n;
@@ -2386,11 +2402,131 @@
       setJd(Eph.jdFromDate(new Date()));
     }
 
+    // ---- Time zone --------------------------------------------------------------
+    //
+    // The clock is a UT Julian Date; the headline and the date form present it as
+    // civil time in state.timeZone, an IANA zone name the picker chooses and
+    // localStorage remembers. Without timezone.js (or with a zone the browser does
+    // not know) everything falls back to UT, exactly as before the picker existed.
+
+    function zonesAvailable() {
+      return !!(TZ && typeof TZ.civil === 'function' && typeof TZ.jd === 'function' && typeof TZ.isValid === 'function');
+    }
+
+    // The saved zone when there is a valid one, else the browser's own zone.
+    function loadTimeZone() {
+      if (!zonesAvailable()) return 'UTC';
+      let saved = null;
+      try {
+        saved = window.localStorage.getItem(TZ_STORAGE_KEY);
+      } catch (err) {
+        saved = null;          // storage blocked (private mode, sandbox): start from the browser zone
+      }
+      return saved && TZ.isValid(saved) ? saved : TZ.browserZone();
+    }
+
+    function saveTimeZone(zone) {
+      try {
+        window.localStorage.setItem(TZ_STORAGE_KEY, zone);
+      } catch (err) {
+        // Storage blocked or full: the choice still holds for this page.
+      }
+    }
+
+    // Civil time of a UT instant in the chosen zone: {year, month, day, hour, minute,
+    // second, weekday, offsetSeconds, abbreviation}, with astronomical years.
+    function zonedCivil(jd) {
+      if (zonesAvailable()) return TZ.civil(state.timeZone, jd);
+      const c = Eph.civilFromJd(jd);
+      c.weekday = weekdayIndex(jd);
+      c.offsetSeconds = 0;
+      c.abbreviation = 'UTC';
+      return c;
+    }
+
+    // UT Julian Date of a civil time in the chosen zone. TimeZones.jd documents how a
+    // skipped or repeated hour at a daylight-saving change is resolved.
+    function zonedJd(year, month, day, hour, minute, second) {
+      const s = second || 0;
+      if (zonesAvailable()) {
+        const jd = TZ.jd(state.timeZone, year, month, day, hour, minute, s);
+        if (Number.isFinite(jd)) return jd;
+      }
+      return Eph.jdFromCivil(year, month, day, hour, minute, s);
+    }
+
+    // Option text: 'America/New York (UTC-04:00)', the offset taken at the clock's
+    // current instant.
+    function timeZoneOptionText(zone) {
+      return TZ.label(zone, state.jd).replace(/_/g, ' ');
+    }
+
+    // Fills the picker: UTC, then the browser's zone, then every zone the browser
+    // knows grouped by IANA region. Hidden, with the old static 'UTC' label shown in
+    // its place, when timezone.js is unavailable.
+    function buildTimeZoneSelect() {
+      if (!dom.tzSelect) return;
+      if (!zonesAvailable()) {
+        dom.tzSelect.hidden = true;
+        if (dom.tzFallback) dom.tzFallback.hidden = false;
+        return;
+      }
+      dom.tzSelect.textContent = '';
+      const addOption = (parent, zone) => {
+        const opt = document.createElement('option');
+        opt.value = zone;
+        opt.textContent = timeZoneOptionText(zone);
+        parent.appendChild(opt);
+      };
+      const zones = TZ.list();
+      const local = TZ.browserZone();
+      addOption(dom.tzSelect, 'UTC');
+      if (local !== 'UTC') addOption(dom.tzSelect, local);
+      // A saved zone the list lacks (another browser knew it) still gets an entry.
+      if (state.timeZone !== 'UTC' && state.timeZone !== local && zones.indexOf(state.timeZone) < 0) addOption(dom.tzSelect, state.timeZone);
+      const byRegion = new Map();
+      zones.forEach((zone) => {
+        if (zone === 'UTC') return;
+        const region = TZ.region(zone);
+        if (!byRegion.has(region)) byRegion.set(region, []);
+        byRegion.get(region).push(zone);
+      });
+      TZ.REGIONS.forEach((region) => {
+        const members = byRegion.get(region);
+        if (!members) return;
+        const group = document.createElement('optgroup');
+        group.label = region;
+        members.forEach((zone) => addOption(group, zone));
+        dom.tzSelect.appendChild(group);
+      });
+      dom.tzSelect.value = state.timeZone;
+    }
+
+    // Rewrites the offsets in the option labels for the clock's current instant. A
+    // few milliseconds for the whole list, so it runs on a zone change, not per frame.
+    function refreshTimeZoneLabels() {
+      if (!dom.tzSelect || !zonesAvailable()) return;
+      Array.prototype.forEach.call(dom.tzSelect.options, (opt) => {
+        opt.textContent = timeZoneOptionText(opt.value);
+      });
+    }
+
+    function setTimeZone(zone) {
+      if (!zonesAvailable() || !TZ.isValid(zone)) return;
+      state.timeZone = zone;
+      saveTimeZone(zone);
+      if (dom.tzSelect && dom.tzSelect.value !== zone) dom.tzSelect.value = zone;
+      refreshTimeZoneLabels();
+      updateYearBounds();
+      syncTimeInputs(true);
+      updateDateHeadline();
+    }
+
     // ---- Date display and inputs ------------------------------------------------
 
     function updateDateHeadline() {
-      const c = Eph.civilFromJd(state.jd);
-      const dayText = weekdayName(state.jd) + ', ' + c.day + ' ' + MONTHS[c.month - 1] + ' ';
+      const c = zonedCivil(state.jd);
+      const dayText = WEEKDAYS[c.weekday] + ', ' + c.day + ' ' + MONTHS[c.month - 1] + ' ';
       if (c.year <= 0) {
         dom.dateHeadline.textContent = '';
         dom.dateHeadline.appendChild(document.createTextNode(dayText + (1 - c.year) + ' '));
@@ -2401,7 +2537,9 @@
       } else {
         dom.dateHeadline.textContent = dayText + c.year;
       }
-      const time = pad2(c.hour) + ':' + pad2(c.minute) + ' UTC';
+      // Clock time in the chosen zone with its short name ('11:59 EDT', '15:59 UTC');
+      // the Julian Date that follows is always UT.
+      const time = pad2(c.hour) + ':' + pad2(c.minute) + ' ' + c.abbreviation;
       dom.dateSubline.textContent = '';
       const parts = [time, 'JD ' + state.jd.toFixed(3), 'proleptic Gregorian'];
       parts.forEach((text, i) => {
@@ -2420,6 +2558,14 @@
       return a && dom.dateForm.contains(a);
     }
 
+    // The year field's native min and max, taken in the chosen zone: at the clamped
+    // ends of the clock range the zoned year is -3001 west of Greenwich and 3001 east
+    // of it, and a synced value outside the bounds would make the browser block Apply.
+    function updateYearBounds() {
+      dom.inYear.min = String(zonedCivil(JD_MIN).year);
+      dom.inYear.max = String(zonedCivil(JD_MAX).year);
+    }
+
     function updateEraHint() {
       const y = parseInt(dom.inYear.value, 10);
       if (Number.isNaN(y)) { dom.eraHint.textContent = ''; return; }
@@ -2428,7 +2574,7 @@
 
     function syncTimeInputs(force) {
       if (!force && fieldsFocused()) return;
-      const c = Eph.civilFromJd(state.jd);
+      const c = zonedCivil(state.jd);
       dom.inYear.value = String(c.year);
       dom.inMonth.value = String(c.month);
       dom.inDay.value = String(c.day);
@@ -2459,7 +2605,7 @@
       h = clamp(h, 0, 23);
       mi = clamp(mi, 0, 59);
       setPlaying(false);
-      setJd(Eph.jdFromCivil(y, mo, d, h, mi, 0));
+      setJd(zonedJd(y, mo, d, h, mi, 0));
       syncTimeInputs(true);
     }
 
@@ -2469,7 +2615,7 @@
       const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(v);
       if (!m) return;
       setPlaying(false);
-      setJd(Eph.jdFromCivil(+m[1], +m[2], +m[3], +m[4], +m[5], 0));
+      setJd(zonedJd(+m[1], +m[2], +m[3], +m[4], +m[5], 0));
       syncTimeInputs(true);
     }
 
@@ -3419,12 +3565,12 @@
     function wireUI() {
       buildSpeedSelect();
       buildMonthSelect();
+      buildTimeZoneSelect();
       buildTimeline();
       buildInfoRows();
       setPlaying(state.playing);
       setDirection(state.direction);
-      dom.inYear.min = String(Eph.civilFromJd(JD_MIN).year);
-      dom.inYear.max = String(Eph.civilFromJd(JD_MAX).year);
+      updateYearBounds();
       syncTimeInputs(true);
       updateDateHeadline();
 
@@ -3442,6 +3588,7 @@
       dom.dateForm.addEventListener('submit', (ev) => { ev.preventDefault(); applyDateFields(); });
       dom.inYear.addEventListener('input', updateEraHint);
       dom.inDatetime.addEventListener('change', applyDatetimeLocal);
+      if (dom.tzSelect) dom.tzSelect.addEventListener('change', () => setTimeZone(dom.tzSelect.value));
 
       dom.timeline.addEventListener('pointerdown', (ev) => { if (ev.shiftKey) beginFineScrub(ev.clientX); });
       dom.timeline.addEventListener('input', () => {

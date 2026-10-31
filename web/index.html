@@ -543,7 +543,9 @@
     bottom: 18px;
     transform: translateX(-50%);
     z-index: 5;
-    width: min(920px, calc(100% - 32px));
+    /* 960px keeps the date form, time-zone picker included, on one row (about 910px
+       of fields and gaps inside the 922px content box). */
+    width: min(960px, calc(100% - 32px));
     padding: 12px 18px 14px;
     display: flex;
     flex-direction: column;
@@ -632,10 +634,17 @@
   }
   .date-form .lbl { font-size: 11px; color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; margin-right: 2px; }
   .date-form #in-year { width: 78px; }
-  .date-form #in-month { width: 112px; }
+  .date-form #in-month { width: 108px; }
   .date-form #in-day { width: 52px; }
   .date-form #in-hour, .date-form #in-minute { width: 50px; }
+  /* Fixed width so a long zone name ("America/Argentina/Buenos Aires (UTC-03:00)")
+     is clipped by the browser instead of widening the form. */
+  .date-form #tz-select { width: 150px; text-overflow: ellipsis; }
+  .date-form #tz-select[hidden], .date-form #tz-fallback[hidden] { display: none; }
   .date-form .colon { color: var(--muted); margin: 0 -2px; }
+  /* Hour, colon and minute wrap as one unit when the form breaks onto two lines; the
+     gap matches the form's so the spacing is unchanged. */
+  .date-form .hm { display: inline-flex; align-items: center; gap: 6px; }
   .date-form #era-hint { font-size: 11px; color: var(--accent); min-width: 58px; font-variant-numeric: tabular-nums; }
   .date-form .divider { width: 1px; height: 22px; background: var(--border); margin: 0 6px; }
   .date-form #in-datetime { width: 196px; }
@@ -686,7 +695,7 @@
   /* ---------- Responsive ---------- */
   @media (max-width: 1080px) {
     #info-panel { width: 290px; }
-    #controls { width: min(920px, calc(100% - 32px)); }
+    #controls { width: min(960px, calc(100% - 32px)); }
   }
   @media (max-width: 760px) {
     :root { --controls-h: 300px; }
@@ -805,7 +814,7 @@
     <kbd>Shift+drag</kbd><span>Timeline: fine scrub, one year either side</span>
   </div>
   <h3>Accuracy</h3>
-  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian, in UT; year 0 is 1 BCE. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size. Earth wears NASA Blue Marble imagery (public domain, served from the three.js repository) once it has downloaded, and turns with the real Greenwich sidereal time and the precessing pole of date, so the geography under the Sun is right for any date in range. The Moon wears NASA's Lunar Reconnaissance Orbiter colour mosaic with LOLA relief (CGI Moon Kit, NASA Scientific Visualization Studio, public domain) and turns with the IAU rotation model, so the familiar near side faces Earth, rocking with its real libration. Zodiac overlay: tropical signs measured from the equinox of date, as seen from Earth. The coloured dots on the disc, each with a ray from Earth, mark the bodies' directions as seen from Earth and so their signs; with compressed distances the drawn planets themselves can sit outside their sign, because the compression is about the Sun, not Earth. The zodiac's Real scale option (Shift+Z) switches to linear distances and follows Earth from above, so the planets themselves sit in their signs, each drawn as a fixed-size dot at its real-scale position, while the signs and the body markers sit on a wheel of fixed screen size around Earth; the camera presets then put the inner system, Saturn's distance or the whole disc inside the wheel.</p>
+  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian; year 0 is 1 BCE. The headline and the date form show and accept times in the time zone chosen in the date form (this browser remembers the choice); the Julian Date is always UT. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size. Earth wears NASA Blue Marble imagery (public domain, served from the three.js repository) once it has downloaded, and turns with the real Greenwich sidereal time and the precessing pole of date, so the geography under the Sun is right for any date in range. The Moon wears NASA's Lunar Reconnaissance Orbiter colour mosaic with LOLA relief (CGI Moon Kit, NASA Scientific Visualization Studio, public domain) and turns with the IAU rotation model, so the familiar near side faces Earth, rocking with its real libration. Zodiac overlay: tropical signs measured from the equinox of date, as seen from Earth. The coloured dots on the disc, each with a ray from Earth, mark the bodies' directions as seen from Earth and so their signs; with compressed distances the drawn planets themselves can sit outside their sign, because the compression is about the Sun, not Earth. The zodiac's Real scale option (Shift+Z) switches to linear distances and follows Earth from above, so the planets themselves sit in their signs, each drawn as a fixed-size dot at its real-scale position, while the signs and the body markers sit on a wheel of fixed screen size around Earth; the camera presets then put the inner system, Saturn's distance or the whole disc inside the wheel.</p>
 </div>
 
 <aside id="info-panel" class="glass" aria-label="Positions">
@@ -886,13 +895,16 @@
     <label class="sr-only" for="in-month">Month</label>
     <select class="field" id="in-month" aria-label="Month"></select>
     <input class="field" type="number" id="in-day" min="1" max="31" step="1" aria-label="Day">
-    <span class="lbl">UTC</span>
-    <input class="field" type="number" id="in-hour" min="0" max="23" step="1" aria-label="Hour">
-    <span class="colon">:</span>
-    <input class="field" type="number" id="in-minute" min="0" max="59" step="1" aria-label="Minute">
+    <select class="field" id="tz-select" aria-label="Time zone" title="Time zone for the clock and these fields"></select>
+    <span class="lbl" id="tz-fallback" hidden>UTC</span>
+    <span class="hm">
+      <input class="field" type="number" id="in-hour" min="0" max="23" step="1" aria-label="Hour">
+      <span class="colon">:</span>
+      <input class="field" type="number" id="in-minute" min="0" max="59" step="1" aria-label="Minute">
+    </span>
     <button class="btn small" type="submit" id="btn-apply">Apply</button>
     <span class="divider"></span>
-    <input class="field" type="datetime-local" id="in-datetime" aria-label="Quick date picker (1 to 9999 CE)" title="Quick picker, 0001 to 9999 CE, UTC">
+    <input class="field" type="datetime-local" id="in-datetime" aria-label="Quick date picker (1 to 9999 CE)" title="Quick picker, 0001 to 9999 CE, in the chosen time zone">
   </form>
 </section>
 
@@ -909,6 +921,7 @@
 <script src="ephemeris.js?v=__BUILD__"></script>
 <script src="moons.js?v=__BUILD__"></script>
 <script src="visuals.js?v=__BUILD__"></script>
+<script src="timezone.js?v=__BUILD__"></script>
 <script src="app.js?v=__BUILD__"></script>
 <script type="importmap">
 {"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}

@@ -184,8 +184,12 @@ Saturn to about 0.1–0.35 degrees (the documented limit of the JPL tables).
 **Controls.** Play/pause and speed (real time to 100 years per second,
 forward or reverse), step by day/month/year, a 6000-year timeline (Shift+drag
 scrubs one year either side), a date form that accepts negative years for BCE,
-and a "Now" button. Click a planet or its row to follow it; Esc returns to the
-Sun. Keys: Space, arrow keys, N (now), R (reset view), L (labels), O (orbits),
+a time-zone picker in that form (the headline and the form show and accept
+civil time in the chosen IANA zone, which the browser remembers; the Julian
+Date stays UT, and `scripts/verify_timezone.js` checks the conversions,
+including daylight-saving gaps and pre-1883 local mean time), and a "Now"
+button. Click a planet or its row to follow it; Esc returns to the Sun.
+Keys: Space, arrow keys, N (now), R (reset view), L (labels), O (orbits),
 H (help), 1–4 camera presets.
 
 **Display.** Earth uses real NASA Blue Marble imagery (colour, normal, ocean
@@ -206,7 +210,7 @@ geometry).
 Distances are compressed by default (angular positions stay exact; only the
 radial distance is scaled) with true-scale distance and true-size toggles in
 the settings panel. Dates are shown in the proleptic Gregorian calendar with
-astronomical year numbering (year 0 = 1 BCE).
+astronomical year numbering (year 0 = 1 BCE), in the chosen time zone.
 
 **Moons.** Earth's Moon plus twenty major moons (Phobos, Deimos; Io, Europa,
 Ganymede, Callisto; Mimas, Enceladus, Tethys, Dione, Rhea, Titan, Iapetus;
@@ -253,10 +257,11 @@ geocentric).
 orrery/            importable engine (no web dependency)
   astro.py         astronomical core (Part 1)
   web.py           FastAPI backend for the web orrery (Part 6)
-web/               the browser orrery (index.html, app.js, ephemeris.js, moons.js, visuals.js)
+web/               the browser orrery (index.html, app.js, ephemeris.js, moons.js, visuals.js, timezone.js)
 scripts/           verify_ephemeris.py (planets vs DE441), verify_moons.py (moons vs Horizons),
                    verify_earth_orientation.py (sub-solar point vs Skyfield), verify_belts.js (belt orbits),
-                   verify_zodiac.py (geocentric tropical signs vs AstroEngine)
+                   verify_zodiac.py (geocentric tropical signs vs AstroEngine),
+                   verify_timezone.js (time-zone conversions vs the browser's Intl zone database)
 tests/             pytest suite
 data/              downloaded ephemeris kernels (git-ignored)
 pyproject.toml
