@@ -1552,6 +1552,8 @@
     'uniform float uAries;',
     'uniform float uRadius;',
     'uniform float uOpacity;',
+    'uniform float uInner;',       /* world radius about the centre over which the disc fades in */
+    'uniform float uLineAlpha;',   /* alpha of the sector boundary lines before uOpacity */
     'uniform vec3 uColorA;',
     'uniform vec3 uColorB;',
     'uniform vec3 uLine;',
@@ -1578,9 +1580,9 @@
     '  float arc10 = r * min(frac10, 1.0 - frac10) * TICK;',
     '  float tick = (1.0 - smoothstep(lw * 0.5, lw * 1.5, arc10)) * step(0.94, rn);',
     '  col = mix(col, uLine, max(line, tick));',
-    '  alpha = max(alpha, max(line * 0.35, tick * 0.45));',
+    '  alpha = max(alpha, max(line * uLineAlpha, tick * 0.45));',
     '  alpha *= uOpacity;',
-    '  alpha *= smoothstep(0.0, 0.04, rn) * (1.0 - smoothstep(0.82, 1.0, rn));',
+    '  alpha *= smoothstep(0.0, uInner, r) * (1.0 - smoothstep(0.82, 1.0, rn));',
     '  if (alpha < 0.003) discard;',
     '  gl_FragColor = vec4(col, alpha);',
     '}'
@@ -1922,6 +1924,8 @@
         uAries: { value: 0 },
         uRadius: { value: radius },
         uOpacity: { value: opts.opacity === undefined ? 0.3 : opts.opacity }   /* the frame is sRGB-encoded after rendering, so low linear alphas read ~4x stronger */,
+        uInner: { value: opts.inner === undefined ? 0.04 * radius : opts.inner },
+        uLineAlpha: { value: opts.lineAlpha === undefined ? 0.35 : opts.lineAlpha },
         uColorA: { value: new T.Color(opts.colorA === undefined ? 0xc9a24a : opts.colorA) },
         uColorB: { value: new T.Color(opts.colorB === undefined ? 0x6b78d6 : opts.colorB) },
         uLine: { value: new T.Color(opts.line === undefined ? 0xd9d2b8 : opts.line) }

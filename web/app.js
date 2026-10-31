@@ -187,6 +187,12 @@
   // at STAR_RADIUS, 6000; the camera must stay inside it).
   const ZOOM_MAX_DEFAULT = 3000;
   const ZOOM_MAX_WHEEL = 5800;
+  // The disc fades in over the first 4% of its radius about Earth; at real scale
+  // that is 2.2 AU and would blank the sector lines over the inner system, so the
+  // view fades it over this many screen px instead (just past Earth's dot) and
+  // draws the lines at this alpha (the compressed view keeps the shader defaults).
+  const WHEEL_DISC_INNER_PX = 8;
+  const WHEEL_LINE_ALPHA = 0.65;
 
   // Body dots: the fixed-size sprite each body carries for true-size mode doubles as
   // the body's mark in the real-scale zodiac view, where the globes are a pixel or
@@ -1762,6 +1768,7 @@
       }
       updateZodiacRing(earthPos);
       const wheelOn = inZodiacRealView();
+      if (zodiac.mesh) updateZodiacDiscFade(earthPos, wheelOn);
       if (zodiac.ringLine) {
         zodiac.ringLine.visible = wheelOn;
         zodiac.ticks.visible = wheelOn;
@@ -1789,6 +1796,23 @@
         ring = Math.max(1e-3, (zodiac.wheel.px / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
       }
       zodiac.ring = ring;
+    }
+
+    // Inner fade and line strength of the disc (see WHEEL_DISC_INNER_PX). Real
+    // scale: the fade spans a few screen px at Earth's depth, so the sector lines
+    // run in to Earth's dot at any zoom; otherwise the shader defaults.
+    function updateZodiacDiscFade(earthPos, wheelOn) {
+      const u = zodiac.uniforms;
+      if (!u.uInner || !u.uLineAlpha) return;   // older visuals.js
+      if (wheelOn) {
+        const h = renderer.domElement.clientHeight;
+        const camDist = camera.position.distanceTo(earthPos);
+        u.uInner.value = Math.max(1e-4, (WHEEL_DISC_INNER_PX / (h * 0.5)) * camDist * Math.tan(camera.fov * 0.5 * DEG));
+        u.uLineAlpha.value = WHEEL_LINE_ALPHA;
+      } else {
+        u.uInner.value = 0.04 * zodiac.radius;
+        u.uLineAlpha.value = 0.35;
+      }
     }
 
     // ---- Wheel layout (real-scale view) ----
