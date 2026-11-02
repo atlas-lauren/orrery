@@ -6,6 +6,11 @@ name: CI
 # Not run here: scripts/verify_ephemeris.py, verify_earth_orientation.py and
 # verify_zodiac.py load the 3.3 GB DE441 kernel, and verify_moons.py queries
 # the JPL Horizons API.
+#
+# Both jobs run on macOS, where the project is developed: on Linux,
+# tests/test_events.py's BCE date check fails (glibc strftime prints year -43
+# as "-43", macOS as "-043"), and verify_moon_textures.js's 60 ms per-moon
+# generation limit is exceeded on the slower Linux runners.
 
 on:
   pull_request:
@@ -22,7 +27,7 @@ concurrency:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -45,7 +50,7 @@ jobs:
         run: python -m pytest
 
   verify-js:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
