@@ -5,9 +5,9 @@ name: CI
 #
 # Not run here: scripts/verify_ephemeris.py, verify_earth_orientation.py and
 # verify_zodiac.py load the 3.3 GB DE441 kernel, and verify_moons.py queries
-# the JPL Horizons API. verify_moon_textures.js fails any moon whose texture
-# takes over 60 ms to generate, which the hosted runners (Linux and macOS)
-# exceed although every other check in it passes.
+# the JPL Horizons API. verify_moon_textures.js runs with ORRERY_SKIP_TIMING=1:
+# the hosted runners (Linux and macOS) exceed its 60 ms per-moon generation
+# limit, so CI checks its output but not its speed.
 #
 # pytest runs on macOS, where the project is developed: on Linux,
 # tests/test_events.py's BCE date check fails because glibc strftime prints
@@ -61,5 +61,9 @@ jobs:
         run: node scripts/verify_belts.js
       - name: verify_moon_orientation.js
         run: node scripts/verify_moon_orientation.js
+      - name: verify_moon_textures.js
+        run: node scripts/verify_moon_textures.js
+        env:
+          ORRERY_SKIP_TIMING: '1'
       - name: verify_timezone.js
         run: node scripts/verify_timezone.js

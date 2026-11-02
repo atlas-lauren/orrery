@@ -12,6 +12,8 @@
  * runs OrreryVisuals.planetTextures() against a stub THREE / document to check the wrapper
  * contract (CanvasTexture map + bumpMap, SRGB colour space on the map, 512 x 256, cached).
  * With --png DIR it also writes contact sheets (colour and bump) as PNGs.
+ * With ORRERY_SKIP_TIMING=1 in the environment (set by CI, whose runners are slower) a
+ * moon over the generation time limit is noted instead of failing.
  * Exit status is non-zero when any check fails.
  */
 'use strict';
@@ -29,6 +31,7 @@ var pngDir = null;
 for (var ai = 0; ai < args.length; ai++) if (args[ai] === '--png') pngDir = args[++ai];
 
 var W = 512, H = 256, LIMIT_MS = 60;
+var skipTiming = process.env.ORRERY_SKIP_TIMING === '1';
 var names = Moons.NAMES;
 var failures = [];
 function fail(msg) { failures.push(msg); console.log('FAIL: ' + msg); }
@@ -104,7 +107,11 @@ names.forEach(function (name) {
   if (sm.seam > 3 * sm.inner + 4) fail(name + ': map seam ' + sm.seam.toFixed(2) + ' vs interior ' + sm.inner.toFixed(2));
   if (sb.seam > 3 * sb.inner + 4) fail(name + ': bump seam ' + sb.seam.toFixed(2) + ' vs interior ' + sb.inner.toFixed(2));
   if (sm.top > 0.6 * sm.mid + 20 || sm.bot > 0.6 * sm.mid + 20) fail(name + ': polar rows vary as much as the equator (pinching?)');
-  if (cold > LIMIT_MS) fail(name + ': ' + cold.toFixed(1) + ' ms exceeds ' + LIMIT_MS + ' ms');
+  if (cold > LIMIT_MS) {
+    var slow = name + ': ' + cold.toFixed(1) + ' ms exceeds ' + LIMIT_MS + ' ms';
+    if (skipTiming) console.log('note: ' + slow + ' (timing not enforced, ORRERY_SKIP_TIMING=1)');
+    else fail(slow);
+  }
   results[name] = out;
   console.log(
     name.padEnd(11) + cold.toFixed(1).padStart(8) + warm.toFixed(1).padStart(9) + ' | ' +
