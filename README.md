@@ -224,9 +224,9 @@ orbits and labels fade in only when you zoom in close to that planet.
 **Zodiac view.** The Zodiac switch (panel header, settings, or the Z key)
 draws the twelve tropical signs as sectors radiating from Earth in the
 ecliptic plane, oriented to the equinox of date so precession is included,
-plots the scene (planets, orbits, moons, belts) at linear distances and
-follows Earth from straight above, so the planets themselves sit in their
-signs. Since a globe is a pixel across at that distance, each body is drawn
+plots the scene (planets, moons, belts) at linear distances, without the
+planet orbit rings, and follows Earth from straight above, so the planets
+themselves sit in their signs. Since a globe is a pixel across at that distance, each body is drawn
 as a fixed-size dot in its colour at its true position (the sprites true-size
 mode uses). The signs and a marker for each body sit on a wheel of fixed
 screen size around Earth, drawn with degree ticks, that zooming never

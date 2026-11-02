@@ -1235,7 +1235,7 @@
       if (plutoRec) { plutoRec.visible = state.showPluto; plutoRec.group.visible = state.showPluto; }
       if (moonRec) { moonRec.visible = state.showMoon; moonRec.group.visible = state.showMoon; }
       if (rowByName.moon) rowByName.moon.hidden = !state.showMoon;
-      if (orbits.pluto) orbits.pluto.line.visible = state.showOrbits && state.showPluto;
+      if (orbits.pluto) orbits.pluto.line.visible = planetOrbitsOn() && state.showPluto;
       for (const rec of bodyList) {
         if (rec.isMoon) continue;   // gated per frame in updateMoonSystems
         if (rec.marker) rec.marker.visible = bodyDotsOn() && rec.visible;
@@ -1524,11 +1524,16 @@
       line.visible = opacity > 0.01;
     }
 
+    // The zodiac view draws no planet orbit rings.
+    function planetOrbitsOn() {
+      return state.showOrbits && !state.zodiac;
+    }
+
     function applyOrbitVisibility() {
       for (const name of PLANETS) {
         const o = orbits[name];
         if (!o) continue;
-        o.line.visible = state.showOrbits && (name !== 'pluto' || state.showPluto);
+        o.line.visible = planetOrbitsOn() && (name !== 'pluto' || state.showPluto);
       }
     }
 
@@ -1949,6 +1954,7 @@
         if (zodiac.rays) zodiac.rays.visible = false;   // shown again by the next frame's marker update
         if (zodiac.ringLine) { zodiac.ringLine.visible = false; zodiac.ticks.visible = false; }
       }
+      applyOrbitVisibility();
       if (linearDistances() !== wasLinear) applyDistanceMapping(false);
       applyViewOffset();
       updateZoomRange();
