@@ -1,0 +1,69 @@
+name: CI
+
+# Runs the pytest suite and the offline verification scripts on pull requests
+# into main and on pushes to main.
+#
+# Not run here: scripts/verify_ephemeris.py, verify_earth_orientation.py and
+# verify_zodiac.py load the 3.3 GB DE441 kernel, and verify_moons.py queries
+# the JPL Horizons API. verify_moon_textures.js runs with ORRERY_SKIP_TIMING=1:
+# the hosted runners (Linux and macOS) exceed its 60 ms per-moon generation
+# limit, so CI checks its output but not its speed.
+#
+# pytest runs on macOS, where the project is developed: on Linux,
+# tests/test_events.py's BCE date check fails because glibc strftime prints
+# year -43 as "-43" where macOS prints "-043".
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      # The tests pin de440s.bsp (~32 MB), which Skyfield downloads into data/
+      # from JPL on first use.
+      - name: Cache the ephemeris kernel
+        uses: actions/cache@v4
+        with:
+          path: data/de440s.bsp
+          key: ephemeris-de440s
+      - name: Install
+        # httpx is needed by fastapi.testclient in tests/test_web.py.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,web]" httpx
+      - name: Run pytest
+        run: python -m pytest
+
+  verify-js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: verify_belts.js
+        run: node scripts/verify_belts.js
+      - name: verify_moon_orientation.js
+        run: node scripts/verify_moon_orientation.js
+      - name: verify_moon_textures.js
+        run: node scripts/verify_moon_textures.js
+        env:
+          ORRERY_SKIP_TIMING: '1'
+      - name: verify_timezone.js
+        run: node scripts/verify_timezone.js
