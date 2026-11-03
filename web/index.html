@@ -136,6 +136,24 @@
   .label.hidden { display: none; }
   #labels.off .label { display: none; }
 
+  /* ---------- Aspects ----------
+     Lines between the bodies on the zodiac wheel, drawn by app.js (updateAspects)
+     above the scene and beneath the labels: green chords for trines and sextiles,
+     dashed coral for squares and oppositions, amber arcs on the ring for
+     conjunctions. Widths and opacities are set per line from the orb. */
+  #aspects {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: hidden;
+  }
+  #aspects .aspect-chord { stroke: #5fd3a0; stroke-linecap: round; fill: none; transition: opacity 0.15s ease; }
+  #aspects .aspect-chord.hard { stroke: #ff8a66; stroke-dasharray: 6 4; stroke-linecap: butt; }
+  #aspects .aspect-arc { stroke: #ffc46b; stroke-linecap: round; stroke-linejoin: round; fill: none; transition: opacity 0.15s ease; }
+
   /* ---------- Glass ---------- */
   .glass {
     background: var(--glass);
@@ -527,6 +545,38 @@
     border: 1px solid var(--border-strong);
     vertical-align: 1px;
   }
+  .aspect-list { margin: 10px 0 4px; padding: 10px 8px 0; border-top: 1px solid var(--border); }
+  .aspect-list[hidden], .aspect-row[hidden], .aspect-empty[hidden] { display: none; }
+  .aspect-list h3 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .aspect-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: 10px;
+    row-gap: 1px;
+    padding: 5px 8px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    cursor: default;
+    border-left: 2px solid var(--aspect-color, var(--muted));
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    transition: background-color 0.15s ease;
+  }
+  .aspect-row:hover { background: rgba(255, 255, 255, 0.05); }
+  .aspect-row[data-kind="soft"] { --aspect-color: #5fd3a0; }
+  .aspect-row[data-kind="hard"] { --aspect-color: #ff8a66; }
+  .aspect-row[data-kind="conj"] { --aspect-color: #ffc46b; }
+  .aspect-row .pair { font-weight: 500; }
+  .aspect-row .kind { color: var(--aspect-color); text-align: right; }
+  .aspect-row .orb { grid-column: 1 / span 2; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .aspect-empty { margin: 0; padding: 4px 8px 8px; font-size: 12px; color: var(--muted); }
   #info-panel .fineprint {
     margin: 0;
     padding: 8px 16px 12px;
@@ -735,6 +785,7 @@
 <body>
 
 <div id="scene"></div>
+<svg id="aspects" aria-hidden="true"></svg>
 <div id="labels" aria-hidden="true"></div>
 
 <header id="title-block">
@@ -766,6 +817,7 @@
   <div class="row"><label for="opt-orbits">Orbits <span class="sub">Sampled paths over one period</span></label><input class="switch" type="checkbox" id="opt-orbits" checked></div>
   <div class="row"><label for="opt-labels">Labels <span class="sub">Body names in the scene</span></label><input class="switch" type="checkbox" id="opt-labels" checked></div>
   <div class="row"><label for="opt-zodiac">Zodiac <span class="sub">Signs on a wheel around Earth, scene at real scale</span></label><input class="switch" type="checkbox" id="opt-zodiac"></div>
+  <div class="row"><label for="opt-aspects">Aspects <span class="sub">Major aspects on the zodiac wheel</span></label><input class="switch" type="checkbox" id="opt-aspects" checked></div>
   <div class="row"><label for="opt-belt">Asteroid belt <span class="sub">Main belt, Hildas and Trojans, real orbits</span></label><input class="switch" type="checkbox" id="opt-belt" checked></div>
   <div class="row"><label for="opt-kuiper">Kuiper belt <span class="sub">Classical belt, plutinos, scattered disk, real orbits</span></label><input class="switch" type="checkbox" id="opt-kuiper" checked></div>
   <div class="row"><label for="opt-milkyway">Milky Way <span class="sub">Galactic band on the sky</span></label><input class="switch" type="checkbox" id="opt-milkyway" checked></div>
@@ -800,6 +852,7 @@
     <kbd>L</kbd><span>Toggle labels</span>
     <kbd>O</kbd><span>Toggle orbits</span>
     <kbd>Z</kbd><span>Toggle the zodiac view</span>
+    <kbd>A</kbd><span>Toggle aspects on the wheel</span>
     <kbd>Esc</kbd><span>Return to the Sun</span>
     <kbd>H</kbd><span>This help</span>
   </div>
@@ -812,7 +865,7 @@
     <kbd>Shift+drag</kbd><span>Timeline: fine scrub, one year either side</span>
   </div>
   <h3>Accuracy</h3>
-  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian; year 0 is 1 BCE. The headline and the date form show and accept times in the time zone chosen in the date form (this browser remembers the choice); the Julian Date is always UT. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size. Earth wears NASA Blue Marble imagery (public domain, served from the three.js repository) once it has downloaded, and turns with the real Greenwich sidereal time and the precessing pole of date, so the geography under the Sun is right for any date in range. The Moon wears NASA's Lunar Reconnaissance Orbiter colour mosaic with LOLA relief (CGI Moon Kit, NASA Scientific Visualization Studio, public domain) and turns with the IAU rotation model, so the familiar near side faces Earth, rocking with its real libration. Zodiac view: tropical signs measured from the equinox of date, as seen from Earth. The view draws the scene at linear distances and follows Earth from above, so the planets themselves sit in their signs, each drawn as a fixed-size dot at its position; the signs and a marker for each body's direction from Earth, with a ray from Earth through the body, sit on a wheel of fixed screen size around Earth, and the camera presets put the inner system, Saturn's distance or the whole disc inside the wheel.</p>
+  <p class="note">Positions are Keplerian approximations from JPL planetary elements, valid from 3000 BCE to 3000 CE; when served by the backend, exact JPL DE441 positions replace them. Dates are proleptic Gregorian; year 0 is 1 BCE. The headline and the date form show and accept times in the time zone chosen in the date form (this browser remembers the choice); the Julian Date is always UT. Planets are tilted to their IAU pole directions; radial distances are compressed unless true scale is on. The Moon is drawn at a distance relative to Earth's size (60 Earth radii in true-size mode), not to the AU scale, which would put it inside the globe. The major moons of Mars, Jupiter, Saturn, Uranus, Neptune and Pluto appear as you zoom in on their planet and are placed the same way, relative to the planet's drawn size. Earth wears NASA Blue Marble imagery (public domain, served from the three.js repository) once it has downloaded, and turns with the real Greenwich sidereal time and the precessing pole of date, so the geography under the Sun is right for any date in range. The Moon wears NASA's Lunar Reconnaissance Orbiter colour mosaic with LOLA relief (CGI Moon Kit, NASA Scientific Visualization Studio, public domain) and turns with the IAU rotation model, so the familiar near side faces Earth, rocking with its real libration. Zodiac view: tropical signs measured from the equinox of date, as seen from Earth. The view draws the scene at linear distances and follows Earth from above, so the planets themselves sit in their signs, each drawn as a fixed-size dot at its position; the signs and a marker for each body's direction from Earth, with a ray from Earth through the body, sit on a wheel of fixed screen size around Earth, and the camera presets put the inner system, Saturn's distance or the whole disc inside the wheel. Aspects (A): the major aspects between the bodies, with the Python engine's orbs, as chords inside the wheel and arcs on the ring for conjunctions, also listed in the Positions panel.</p>
 </div>
 
 <aside id="info-panel" class="glass" aria-label="Positions">
@@ -837,7 +890,7 @@
     <span id="zodiac-badge" class="badge" hidden>geocentric · tropical</span>
   </div>
   <div id="info-rows" role="list"></div>
-  <p id="info-fineprint" class="fineprint" hidden>Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. Click a row to follow that body. Earth's Moon is always listed beneath Earth; while you follow another planet with moons, they are listed beneath it. Moon rows show distance from the planet's centre (km and planet radii) and orbital period. With the zodiac view on, the longitude column switches to the geocentric tropical zodiac: each body's sign as seen from Earth, measured from the equinox of date (the Earth row then shows the Sun's sign and the Moon row its sign in place of the km figure); the distances are unchanged. The view draws the scene at linear distances and follows Earth from straight above, so the planets sit in their signs, each drawn as a dot in its colour at its position (the globes are a pixel across at that distance) with the moons and belts at the same scale and no planet orbit rings. The signs and the body markers sit on a wheel of fixed size around Earth, with degree ticks, that zooming never changes: the sign labels outside the ring, each body's dot on it with its tag inside, and a ray from Earth through the planet to its dot. Keys 1, 3 and 2 put the inner system, Saturn's distance and the whole disc inside the wheel; R returns to the Saturn framing. Turning the view off keeps the camera where it is.</p>
+  <p id="info-fineprint" class="fineprint" hidden>Heliocentric ecliptic J2000 longitude with its zodiac sign, distance from the Sun and from Earth. Click a row to follow that body. Earth's Moon is always listed beneath Earth; while you follow another planet with moons, they are listed beneath it. Moon rows show distance from the planet's centre (km and planet radii) and orbital period. With the zodiac view on, the longitude column switches to the geocentric tropical zodiac: each body's sign as seen from Earth, measured from the equinox of date (the Earth row then shows the Sun's sign and the Moon row its sign in place of the km figure); the distances are unchanged. The view draws the scene at linear distances and follows Earth from straight above, so the planets sit in their signs, each drawn as a dot in its colour at its position (the globes are a pixel across at that distance) with the moons and belts at the same scale and no planet orbit rings. The signs and the body markers sit on a wheel of fixed size around Earth, with degree ticks, that zooming never changes: the sign labels outside the ring, each body's dot on it with its tag inside, and a ray from Earth through the planet to its dot. Keys 1, 3 and 2 put the inner system, Saturn's distance and the whole disc inside the wheel; R returns to the Saturn framing. Aspects (A, or the settings switch): the major aspects between the wheel's bodies, with the angles and orbs of the Python aspect engine (conjunction and opposition 8°, trine and square 7°, sextile 5°), drawn as chords inside the wheel (green for trines and sextiles, dashed coral for squares and oppositions) and as amber arcs on the ring for conjunctions, stronger the closer to exact, and listed beneath the bodies with the orb and whether it is applying (closing) or separating. Hover a body's tag, dot or row, or an aspect in the list, to bring its aspects forward. Turning the view off keeps the camera where it is.</p>
 </aside>
 
 <section id="controls" class="glass" aria-label="Time controls">
