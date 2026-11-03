@@ -405,6 +405,8 @@
       optPlutoPanel: $('opt-pluto-panel'),
       optZodiac: $('opt-zodiac'),
       optZodiacPanel: $('opt-zodiac-panel'),
+      optAspects: $('opt-aspects'),
+      aspects: $('aspects'),
       zodiacBadge: $('zodiac-badge'),
       titleBlock: $('title-block'),
       btnInfoHelp: $('btn-info-help'),
@@ -445,6 +447,7 @@
       showMoon: true,
       showPlanetMoons: true,
       zodiac: false,           // tropical zodiac view: linear scale, Earth followed from above, geocentric panel
+      showAspects: true,       // aspect lines on the zodiac wheel and the panel's aspect list
       focus: null,             // body name being followed, or null for the Sun
       hover: null,             // body name under the pointer
       lastJdChangeAt: 0,       // performance.now() of the last jd change
@@ -468,6 +471,9 @@
         radius: zodiac.radius, ring: zodiac.ring, disc: !!zodiac.mesh, wheel: zodiac.wheel,
         ariesRad: zodiac.uniforms ? zodiac.uniforms.uAries.value : NaN,
         markers: zodiac.markers.map((m) => ({ name: m.name, shown: m.shown, tropicalDeg: m.tropicalDeg })) }),
+      // The aspects the wheel draws this frame, to check against orrery.aspects.AspectEngine.
+      aspects: () => aspects.list.map((x) => ({ a: zodiac.markers[x.a].name, b: zodiac.markers[x.b].name,
+        aspect: x.type.name, orb: x.orb, applying: x.applying })),
       // Screen positions (CSS px) of the bodies and of the zodiac markers, for checking
       // that at real scale each marker, its body and Earth are collinear on screen.
       screen: () => ({
@@ -1934,6 +1940,296 @@
       }
     }
 
+    // ---- Aspects ----
+    //
+    // The major (Ptolemaic) aspects between the wheel's bodies, with the angles and
+    // orbs of orrery/config/aspects.toml so the wheel and the Python AspectEngine
+    // agree: the separation of two geocentric tropical longitudes, folded to
+    // [0, 180], within orb of an aspect's angle. The orbs never overlap, so a pair
+    // has at most one aspect. Applying means the orb is shrinking, from each body's
+    // rate in longitude (Ephemeris.geocentric a few minutes apart, cached per jd).
+    //
+    // They are drawn in an SVG overlay above the scene and beneath the labels: a
+    // chord between the two bodies' rays at ASPECT_CHORD_INSET_PX inside the ring
+    // (clear of the marker tags; less on a small wheel), green for trines and
+    // sextiles, dashed coral for squares and oppositions; a conjunction is an arc
+    // just outside the ring from one dot to the other, run on past both dots so a
+    // close one still shows. Closer aspects draw stronger. Hovering a body (its marker tag, its dot
+    // in the scene or its panel row) or an aspect in the panel's list brings its
+    // aspects forward and dims the rest. The points are projected from the ecliptic
+    // plane, so the chords follow the wheel at any camera tilt.
+    const ASPECT_TYPES = [
+      { name: 'conjunction', angle: 0, orb: 8, kind: 'conj' },
+      { name: 'sextile', angle: 60, orb: 5, kind: 'soft' },
+      { name: 'square', angle: 90, orb: 7, kind: 'hard' },
+      { name: 'trine', angle: 120, orb: 7, kind: 'soft' },
+      { name: 'opposition', angle: 180, orb: 8, kind: 'hard' }
+    ];
+    const ASPECT_SYMBOL = { conjunction: '☌', sextile: '⚹', square: '□', trine: '△', opposition: '☍' };
+    const ASPECT_CHORD_INSET_PX = 88;   // ring to chord ends; the marker tags sit in between
+    const ASPECT_CHORD_INSET_MAX = 0.3; // of the wheel radius, so a small wheel's chords stay clear of Earth
+    const ASPECT_ARC_OUT_PX = 7;        // conjunction arcs: outside the ring, among the tick marks
+    const ASPECT_ARC_PAD_PX = 6;        // and past each dot
+    const ASPECT_RATE_DT = 10 / 1440;   // days between the two longitudes of a rate
+    const ASPECT_RATE_REUSE = 0.05;     // days a set of rates is reused for
+    const ASPECT_ARC_STEPS = 12;
+    const SVG_NS = 'http://www.w3.org/2000/svg';
+
+    const aspects = {
+      svg: null,
+      list: [],          // this frame's aspects, by orb: { a, b, type, orb, applying } (a, b marker indices)
+      pool: [],          // one { chord, arc, stamp } per marker pair, reused frame to frame
+      stamp: 0,          // frame count; a slot not stamped this frame is hidden
+      rates: new Float64Array(ZODIAC_MARKER_BODIES.length), ratesJd: NaN,
+      hoverBody: null,   // body name hovered on a marker tag or a panel row
+      hoverKey: null,    // 'a|b' of the aspect hovered in the panel list
+      listEl: null, listRows: [], emptyEl: null
+    };
+
+    function aspectsOn() {
+      return state.zodiac && state.showAspects;
+    }
+
+    function buildAspectOverlay() {
+      const svg = dom.aspects;
+      if (!svg) return;
+      aspects.svg = svg;
+      const n = zodiac.markers.length;
+      for (let i = 0; i < n * (n - 1) / 2; i++) {
+        const chord = document.createElementNS(SVG_NS, 'line');
+        chord.setAttribute('class', 'aspect-chord');
+        chord.style.display = 'none';
+        const arc = document.createElementNS(SVG_NS, 'polyline');
+        arc.setAttribute('class', 'aspect-arc');
+        arc.style.display = 'none';
+        svg.appendChild(chord);
+        svg.appendChild(arc);
+        aspects.pool.push({ chord, arc, stamp: 0 });
+      }
+    }
+
+    // Degrees/day of each marker body's geocentric longitude, recomputed once jd
+    // has moved ASPECT_RATE_REUSE days (a planet's rate barely changes in an hour).
+    function aspectRates(jd) {
+      if (Math.abs(jd - aspects.ratesJd) <= ASPECT_RATE_REUSE) return aspects.rates;
+      aspects.ratesJd = jd;
+      for (let i = 0; i < zodiac.markers.length; i++) {
+        let rate = 0;
+        try {
+          const l0 = Eph.geocentric(zodiac.markers[i].name, jd).lon;
+          const l1 = Eph.geocentric(zodiac.markers[i].name, jd + ASPECT_RATE_DT).lon;
+          rate = foldSigned(l1 - l0) / ASPECT_RATE_DT;
+        } catch (err) {
+          rate = 0;
+        }
+        aspects.rates[i] = rate;
+      }
+      return aspects.rates;
+    }
+
+    // Signed angle in (-180, 180].
+    function foldSigned(deg) {
+      const l = wrapLon(deg);
+      return l > 180 ? l - 360 : l;
+    }
+
+    // The aspects between the shown markers at jd, sorted by orb, into aspects.list.
+    function findAspects(jd) {
+      const list = aspects.list;
+      list.length = 0;
+      const ms = zodiac.markers;
+      const rates = aspectRates(jd);
+      const dt = ASPECT_RATE_DT;
+      for (let i = 0; i < ms.length; i++) {
+        if (!ms[i].shown || !Number.isFinite(ms[i].tropicalDeg)) continue;
+        for (let j = i + 1; j < ms.length; j++) {
+          if (!ms[j].shown || !Number.isFinite(ms[j].tropicalDeg)) continue;
+          const d = foldSigned(ms[i].tropicalDeg - ms[j].tropicalDeg);
+          const sep = Math.abs(d);
+          for (const t of ASPECT_TYPES) {
+            const orb = Math.abs(sep - t.angle);
+            if (orb > t.orb) continue;
+            const sepNext = Math.abs(foldSigned(d + (rates[i] - rates[j]) * dt));
+            const orbNext = Math.abs(sepNext - t.angle);
+            list.push({ a: i, b: j, type: t, orb, applying: orbNext < orb });
+            break;
+          }
+        }
+      }
+      list.sort((x, y) => x.orb - y.orb);
+      return list;
+    }
+
+    // Index into aspects.pool of the pair i < j.
+    function pairIndex(i, j) {
+      const n = zodiac.markers.length;
+      return i * n - (i * (i + 1)) / 2 + (j - i - 1);
+    }
+
+    const aspectV = new THREE.Vector3();
+    // Screen point (CSS px) of the ecliptic-plane point at radius r from Earth along
+    // J2000 longitude lonDeg, into out [x, y]; false when behind the camera.
+    function aspectPoint(earthPos, r, lonDeg, w, h, out) {
+      const a = lonDeg * DEG;
+      aspectV.set(earthPos.x + r * Math.cos(a), earthPos.y, earthPos.z - r * Math.sin(a)).project(camera);
+      out[0] = (aspectV.x * 0.5 + 0.5) * w;
+      out[1] = (-aspectV.y * 0.5 + 0.5) * h;
+      return aspectV.z < 1 && aspectV.z > -1;
+    }
+
+    const aspectP = [0, 0];
+    const aspectQ = [0, 0];
+    // Per frame after updateZodiacLabelPositions (the camera matrices are current):
+    // finds the aspects and redraws the overlay.
+    function updateAspects() {
+      const svg = aspects.svg;
+      if (!svg) return;
+      const on = aspectsOn() && !!bodies.earth;
+      svg.style.display = on ? '' : 'none';
+      if (!on) { aspects.list.length = 0; return; }
+      const w = renderer.domElement.clientWidth;
+      const h = renderer.domElement.clientHeight;
+      const earthPos = bodies.earth.group.position;
+      const eq = equinoxOfDate(state.jd);
+      const ring = zodiac.ring;
+      const px = Math.max(1, zodiac.wheel.px);
+      const inner = ring * (1 - Math.min(ASPECT_CHORD_INSET_PX, ASPECT_CHORD_INSET_MAX * px) / px);
+      const arcR = ring * (1 + ASPECT_ARC_OUT_PX / px);
+      const arcPad = ASPECT_ARC_PAD_PX / px / DEG;   // degrees
+      const list = findAspects(state.jd);
+      const focusBody = aspects.hoverBody || (state.hover && state.hover !== 'earth' ? state.hover : null);
+      const focusKey = aspects.hoverKey;
+      const stamp = ++aspects.stamp;
+      for (const asp of list) {
+        const ma = zodiac.markers[asp.a], mb = zodiac.markers[asp.b];
+        const slot = aspects.pool[pairIndex(asp.a, asp.b)];
+        slot.stamp = stamp;
+        const strength = 1 - asp.orb / asp.type.orb;   // 1 exact, 0 at the edge of orb
+        let opacity = 0.42 + 0.53 * strength;
+        let width = 1 + 1.4 * strength;
+        const involved = focusKey ? focusKey === ma.name + '|' + mb.name
+          : focusBody ? (ma.name === focusBody || mb.name === focusBody) : true;
+        if (focusKey || focusBody) {
+          if (involved) { opacity = 1; width += 0.6; } else opacity *= 0.18;
+        }
+        const la = ma.tropicalDeg + eq, lb = mb.tropicalDeg + eq;
+        if (asp.type.kind === 'conj') {
+          slot.chord.style.display = 'none';
+          const d = foldSigned(lb - la);
+          const dir = d < 0 ? -1 : 1;
+          const start = la - dir * arcPad;
+          const span = d + 2 * dir * arcPad;
+          let pts = '';
+          for (let k = 0; k <= ASPECT_ARC_STEPS; k++) {
+            if (!aspectPoint(earthPos, arcR, start + (span * k) / ASPECT_ARC_STEPS, w, h, aspectP)) { pts = ''; break; }
+            pts += aspectP[0].toFixed(1) + ',' + aspectP[1].toFixed(1) + ' ';
+          }
+          if (!pts) { slot.arc.style.display = 'none'; continue; }
+          slot.arc.setAttribute('points', pts);
+          slot.arc.style.strokeWidth = (width + 1).toFixed(2);
+          slot.arc.style.opacity = opacity.toFixed(3);
+          slot.arc.style.display = '';
+        } else {
+          slot.arc.style.display = 'none';
+          if (!aspectPoint(earthPos, inner, la, w, h, aspectP) || !aspectPoint(earthPos, inner, lb, w, h, aspectQ)) {
+            slot.chord.style.display = 'none';
+            continue;
+          }
+          const c = slot.chord;
+          c.setAttribute('x1', aspectP[0].toFixed(1)); c.setAttribute('y1', aspectP[1].toFixed(1));
+          c.setAttribute('x2', aspectQ[0].toFixed(1)); c.setAttribute('y2', aspectQ[1].toFixed(1));
+          c.classList.toggle('hard', asp.type.kind === 'hard');
+          c.style.strokeWidth = width.toFixed(2);
+          c.style.opacity = opacity.toFixed(3);
+          c.style.display = '';
+        }
+      }
+      for (const slot of aspects.pool) {
+        if (slot.stamp === stamp) continue;
+        slot.chord.style.display = 'none';
+        slot.arc.style.display = 'none';
+      }
+    }
+
+    function setAspectHover(body, key) {
+      aspects.hoverBody = body || null;
+      aspects.hoverKey = key || null;
+    }
+
+    // The panel's aspect list: a heading and one row per aspect (the pair, the
+    // aspect, its orb and whether it is applying), beneath the body rows. Rows are
+    // reused; the list refreshes with the panel.
+    function buildAspectList() {
+      const wrap = document.createElement('div');
+      wrap.className = 'aspect-list';
+      wrap.hidden = true;
+      const head = document.createElement('h3');
+      head.textContent = 'Aspects';
+      const empty = document.createElement('p');
+      empty.className = 'aspect-empty';
+      empty.textContent = 'No major aspects within orb.';
+      wrap.appendChild(head);
+      wrap.appendChild(empty);
+      dom.infoRows.appendChild(wrap);
+      aspects.listEl = wrap;
+      aspects.emptyEl = empty;
+      aspects.listRows = [];
+    }
+
+    function aspectRow(k) {
+      let row = aspects.listRows[k];
+      if (row) return row;
+      const el = document.createElement('div');
+      el.className = 'aspect-row';
+      const pair = document.createElement('span');
+      pair.className = 'pair';
+      const kind = document.createElement('span');
+      kind.className = 'kind';
+      const orb = document.createElement('span');
+      orb.className = 'orb';
+      el.appendChild(pair);
+      el.appendChild(kind);
+      el.appendChild(orb);
+      row = { el, pair, kind, orb, key: '' };
+      el.addEventListener('mouseenter', () => setAspectHover(null, row.key));
+      el.addEventListener('mouseleave', () => setAspectHover(null, null));
+      aspects.emptyEl.insertAdjacentElement('beforebegin', el);
+      aspects.listRows[k] = row;
+      return row;
+    }
+
+    function updateAspectList() {
+      const wrap = aspects.listEl;
+      if (!wrap) return;
+      const on = aspectsOn();
+      wrap.hidden = !on;
+      if (!on) return;
+      const list = aspects.list;
+      for (let k = 0; k < list.length; k++) {
+        const asp = list[k];
+        const ma = zodiac.markers[asp.a], mb = zodiac.markers[asp.b];
+        const row = aspectRow(k);
+        row.key = ma.name + '|' + mb.name;
+        row.el.hidden = false;
+        row.el.dataset.kind = asp.type.kind;
+        setText(row.pair, DISPLAY_NAME[ma.name] + ' ' + ASPECT_SYMBOL[asp.type.name] + ' ' + DISPLAY_NAME[mb.name]);
+        setText(row.kind, asp.type.name);
+        setText(row.orb, asp.orb.toFixed(1) + '° ' + (asp.applying ? 'applying' : 'separating'));
+      }
+      for (let k = list.length; k < aspects.listRows.length; k++) aspects.listRows[k].el.hidden = true;
+      aspects.emptyEl.hidden = list.length > 0;
+    }
+
+    // Aspects can be switched from the settings popover or the A key; they show
+    // only in the zodiac view.
+    function setShowAspects(on) {
+      state.showAspects = !!on;
+      if (dom.optAspects) dom.optAspects.checked = state.showAspects;
+      if (!state.showAspects) setAspectHover(null, null);
+      updateAspects();
+      updateAspectList();
+    }
+
     // Zodiac can be switched from the settings popover, the Positions panel header
     // or the Z key; both switches, the disc, the labels and the panel follow one state.
     // Turning it on holds the distance mapping linear and enters the view (Earth
@@ -2712,6 +3008,8 @@
         el.textContent = DISPLAY_NAME[m.name] || m.name;
         el.style.display = 'none';
         el.addEventListener('click', (ev) => { ev.stopPropagation(); setFocus(m.name === 'sun' ? null : m.name); });
+        el.addEventListener('mouseenter', () => setAspectHover(m.name, null));
+        el.addEventListener('mouseleave', () => setAspectHover(null, null));
         dom.labels.appendChild(el);
         m.label = el;
         m.labelBox.w = 0; m.labelBox.h = 0;
@@ -3208,6 +3506,7 @@
         moonRow.hidden = !state.showMoon;
         rowByName.earth.insertAdjacentElement('afterend', moonRow);
       }
+      buildAspectList();
     }
 
     function setText(el, text) {
@@ -3500,6 +3799,7 @@
         case 'KeyL': dom.optLabels.checked = !dom.optLabels.checked; dom.optLabels.dispatchEvent(new Event('change')); break;
         case 'KeyO': dom.optOrbits.checked = !dom.optOrbits.checked; dom.optOrbits.dispatchEvent(new Event('change')); break;
         case 'KeyZ': setZodiac(!state.zodiac); break;
+        case 'KeyA': setShowAspects(!state.showAspects); break;
         case 'KeyH': togglePopover('help'); break;
         case 'Digit1': applyPreset('inner'); break;
         case 'Digit2': applyPreset('full'); break;
@@ -3607,6 +3907,16 @@
       dom.optPlutoPanel.addEventListener('change', () => setShowPluto(dom.optPlutoPanel.checked));
       if (dom.optZodiac) dom.optZodiac.addEventListener('change', () => setZodiac(dom.optZodiac.checked));
       if (dom.optZodiacPanel) dom.optZodiacPanel.addEventListener('change', () => setZodiac(dom.optZodiacPanel.checked));
+      if (dom.optAspects) dom.optAspects.addEventListener('change', () => setShowAspects(dom.optAspects.checked));
+      // Hovering a body's row brings its aspects forward on the wheel (Earth's row
+      // has none: Earth is the wheel's centre).
+      dom.infoRows.addEventListener('mouseover', (ev) => {
+        if (ev.target.closest('.aspect-row')) return;   // the aspect rows set their own hover
+        const row = ev.target.closest('.info-row');
+        const name = row ? row.dataset.body : null;
+        setAspectHover(ZODIAC_MARKER_BODIES.includes(name) ? name : null, null);
+      });
+      dom.infoRows.addEventListener('mouseleave', () => setAspectHover(null, null));
       dom.optMoon.addEventListener('change', () => { state.showMoon = dom.optMoon.checked; applyBodyVisibility(); });
       if (dom.optPlanetMoons) {
         dom.optPlanetMoons.addEventListener('change', () => { state.showPlanetMoons = dom.optPlanetMoons.checked; applyBodyVisibility(); });
@@ -3637,6 +3947,7 @@
       dom.optPluto.checked = state.showPluto;
       dom.optPlutoPanel.checked = state.showPluto;
       syncZodiacUI();
+      if (dom.optAspects) dom.optAspects.checked = state.showAspects;
       dom.optMoon.checked = state.showMoon;
       if (dom.optPlanetMoons) {
         dom.optPlanetMoons.checked = state.showPlanetMoons;
@@ -3851,6 +4162,7 @@
       updateZodiac(state.jd, positions);   // after the camera: the wheel's world radius depends on it
       updateScreenPositions();
       updateZodiacLabelPositions();
+      updateAspects();
       updateMoonSystems();
       updateMoonOrbitVisibility();
       updateLabels();
@@ -3862,6 +4174,7 @@
       if (now - state.lastInfoUpdate >= INFO_UPDATE_MS) {
         state.lastInfoUpdate = now;
         updateInfoPanel(positions, currentSource);
+        updateAspectList();
         if (state.playing && now - state.lastInputSync >= 250) {
           state.lastInputSync = now;
           syncTimeInputs(false);
@@ -3941,6 +4254,7 @@
       buildLabels();
       buildZodiacDisc();
       buildZodiacMarkers();
+      buildAspectOverlay();
       wheelReady = true;
       updateWheelLayout();
       done++;

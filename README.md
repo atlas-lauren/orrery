@@ -190,7 +190,7 @@ Date stays UT, and `scripts/verify_timezone.js` checks the conversions,
 including daylight-saving gaps and pre-1883 local mean time), and a "Now"
 button. Click a planet or its row to follow it; Esc returns to the Sun.
 Keys: Space, arrow keys, N (now), R (reset view), L (labels), O (orbits),
-H (help), 1–4 camera presets.
+Z (zodiac view), A (aspects on the wheel), H (help), 1–4 camera presets.
 
 **Display.** Earth uses real NASA Blue Marble imagery (colour, normal, ocean
 specular, night lights and clouds, loaded from the three.js repository on
@@ -242,6 +242,18 @@ panel then shows geocentric tropical longitudes and signs, including the
 Sun's sign on the Earth row and the Moon's sign on its sub-row;
 `scripts/verify_zodiac.py` checks every body's sign against the engine's
 `AstroEngine.position(..., vertex='earth', zodiac='tropical')`.
+
+**Aspects.** In the zodiac view the wheel also draws the major aspects
+between its bodies, with the angles and orbs of the Ptolemaic set in
+`orrery/config/aspects.toml` (conjunction and opposition 8°, trine and square
+7°, sextile 5°), so it finds the same aspects as `AspectEngine.aspects_at`.
+Each aspect is a chord between the two bodies' rays inside the ring, green for
+trines and sextiles and dashed coral for squares and oppositions; a
+conjunction is an amber arc on the ring between the two markers. Lines are
+stronger the closer the aspect is to exact. The Positions panel lists them
+beneath the bodies, closest first, with the orb and whether each is applying
+or separating. Hovering a body's tag, dot or row, or an aspect in the list,
+brings its aspects forward. The settings switch or the A key turns them off.
 
 API: `GET /api/range`, `GET /api/positions?jd=<UT Julian Date>` or
 `?iso=<UTC timestamp>` return heliocentric ecliptic J2000 x/y/z in AU (Moon
