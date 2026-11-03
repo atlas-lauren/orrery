@@ -247,12 +247,12 @@ Sun's sign on the Earth row and the Moon's sign on its sub-row;
 between its bodies, with the angles and orbs of the Ptolemaic set in
 `orrery/config/aspects.toml` (conjunction and opposition 8°, trine and square
 7°, sextile 5°), so it finds the same aspects as `AspectEngine.aspects_at`.
-Each aspect is a chord between the two bodies' rays inside the ring, green for
-trines and sextiles and dashed coral for squares and oppositions; a
-conjunction is an amber arc on the ring between the two markers. Lines are
-stronger the closer the aspect is to exact. The Positions panel lists them
-beneath the bodies, closest first, with the orb and whether each is applying
-or separating. Hovering a body's tag, dot or row, or an aspect in the list,
+Each aspect is a chord from one body's marker on the ring to the other's, as
+in a printed chart, green for trines and sextiles and dashed coral for squares
+and oppositions; a conjunction is an amber arc on the ring between the two
+markers. Lines are stronger the closer the aspect is to exact. The Positions
+panel lists them in a section of its own above the bodies, closest first, with
+the orb and whether each is applying or separating. Hovering a body's tag, dot or row, or an aspect in the list,
 brings its aspects forward. The settings switch or the A key turns them off.
 
 API: `GET /api/range`, `GET /api/positions?jd=<UT Julian Date>` or
