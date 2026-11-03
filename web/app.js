@@ -406,6 +406,7 @@
       optZodiac: $('opt-zodiac'),
       optZodiacPanel: $('opt-zodiac-panel'),
       optAspects: $('opt-aspects'),
+      aspectList: $('aspect-list'),
       aspects: $('aspects'),
       zodiacBadge: $('zodiac-badge'),
       titleBlock: $('title-block'),
@@ -1949,14 +1950,14 @@
     // has at most one aspect. Applying means the orb is shrinking, from each body's
     // rate in longitude (Ephemeris.geocentric a few minutes apart, cached per jd).
     //
-    // They are drawn in an SVG overlay above the scene and beneath the labels: a
-    // chord between the two bodies' rays at ASPECT_CHORD_INSET_PX inside the ring
-    // (clear of the marker tags; less on a small wheel), green for trines and
-    // sextiles, dashed coral for squares and oppositions; a conjunction is an arc
-    // just outside the ring from one dot to the other, run on past both dots so a
-    // close one still shows. Closer aspects draw stronger. Hovering a body (its marker tag, its dot
-    // in the scene or its panel row) or an aspect in the panel's list brings its
-    // aspects forward and dims the rest. The points are projected from the ecliptic
+    // They are drawn in an SVG overlay above the scene and beneath the labels, as
+    // in a printed chart: a chord from one body's marker dot on the ring to the
+    // other's (passing under the marker tags), green for trines and sextiles,
+    // dashed coral for squares and oppositions; a conjunction is an arc just
+    // outside the ring from one dot to the other, run on past both dots so a close
+    // one still shows. Closer aspects draw stronger. Hovering a body (its marker
+    // tag, its dot in the scene or its panel row) or an aspect in the panel's list
+    // brings its aspects forward and dims the rest. The points are projected from the ecliptic
     // plane, so the chords follow the wheel at any camera tilt.
     const ASPECT_TYPES = [
       { name: 'conjunction', angle: 0, orb: 8, kind: 'conj' },
@@ -1965,9 +1966,8 @@
       { name: 'trine', angle: 120, orb: 7, kind: 'soft' },
       { name: 'opposition', angle: 180, orb: 8, kind: 'hard' }
     ];
-    const ASPECT_SYMBOL = { conjunction: '☌', sextile: '⚹', square: '□', trine: '△', opposition: '☍' };
-    const ASPECT_CHORD_INSET_PX = 88;   // ring to chord ends; the marker tags sit in between
-    const ASPECT_CHORD_INSET_MAX = 0.3; // of the wheel radius, so a small wheel's chords stay clear of Earth
+    // How an aspect reads between two names in the panel list ("Moon conjunct Jupiter").
+    const ASPECT_VERB = { conjunction: 'conjunct', sextile: 'sextile', square: 'square', trine: 'trine', opposition: 'opposite' };
     const ASPECT_ARC_OUT_PX = 7;        // conjunction arcs: outside the ring, among the tick marks
     const ASPECT_ARC_PAD_PX = 6;        // and past each dot
     const ASPECT_RATE_DT = 10 / 1440;   // days between the two longitudes of a rate
@@ -1983,7 +1983,7 @@
       rates: new Float64Array(ZODIAC_MARKER_BODIES.length), ratesJd: NaN,
       hoverBody: null,   // body name hovered on a marker tag or a panel row
       hoverKey: null,    // 'a|b' of the aspect hovered in the panel list
-      listEl: null, listRows: [], emptyEl: null
+      listEl: null, listRows: [], emptyEl: null, countEl: null
     };
 
     function aspectsOn() {
@@ -2093,7 +2093,6 @@
       const eq = equinoxOfDate(state.jd);
       const ring = zodiac.ring;
       const px = Math.max(1, zodiac.wheel.px);
-      const inner = ring * (1 - Math.min(ASPECT_CHORD_INSET_PX, ASPECT_CHORD_INSET_MAX * px) / px);
       const arcR = ring * (1 + ASPECT_ARC_OUT_PX / px);
       const arcPad = ASPECT_ARC_PAD_PX / px / DEG;   // degrees
       const list = findAspects(state.jd);
@@ -2131,7 +2130,7 @@
           slot.arc.style.display = '';
         } else {
           slot.arc.style.display = 'none';
-          if (!aspectPoint(earthPos, inner, la, w, h, aspectP) || !aspectPoint(earthPos, inner, lb, w, h, aspectQ)) {
+          if (!aspectPoint(earthPos, ring, la, w, h, aspectP) || !aspectPoint(earthPos, ring, lb, w, h, aspectQ)) {
             slot.chord.style.display = 'none';
             continue;
           }
@@ -2156,23 +2155,28 @@
       aspects.hoverKey = key || null;
     }
 
-    // The panel's aspect list: a heading and one row per aspect (the pair, the
-    // aspect, its orb and whether it is applying), beneath the body rows. Rows are
-    // reused; the list refreshes with the panel.
+    // The panel's aspect list: its own section above the body rows, with its own
+    // scroll, so the current aspects show as soon as the view is on. A heading with
+    // the count and one line per aspect (the pair, the aspect, its orb and whether
+    // it is applying). Rows are reused; the list refreshes with the panel.
     function buildAspectList() {
-      const wrap = document.createElement('div');
-      wrap.className = 'aspect-list';
+      const wrap = dom.aspectList;
+      if (!wrap) return;
+      wrap.textContent = '';
       wrap.hidden = true;
       const head = document.createElement('h3');
-      head.textContent = 'Aspects';
+      head.textContent = 'Aspects ';
+      const count = document.createElement('span');
+      count.className = 'count';
+      head.appendChild(count);
       const empty = document.createElement('p');
       empty.className = 'aspect-empty';
       empty.textContent = 'No major aspects within orb.';
       wrap.appendChild(head);
       wrap.appendChild(empty);
-      dom.infoRows.appendChild(wrap);
       aspects.listEl = wrap;
       aspects.emptyEl = empty;
+      aspects.countEl = count;
       aspects.listRows = [];
     }
 
@@ -2181,16 +2185,21 @@
       if (row) return row;
       const el = document.createElement('div');
       el.className = 'aspect-row';
+      el.setAttribute('role', 'listitem');
       const pair = document.createElement('span');
       pair.className = 'pair';
+      const nameA = document.createElement('span');
       const kind = document.createElement('span');
       kind.className = 'kind';
+      const nameB = document.createElement('span');
+      pair.appendChild(nameA);
+      pair.appendChild(kind);
+      pair.appendChild(nameB);
       const orb = document.createElement('span');
       orb.className = 'orb';
       el.appendChild(pair);
-      el.appendChild(kind);
       el.appendChild(orb);
-      row = { el, pair, kind, orb, key: '' };
+      row = { el, nameA, kind, nameB, orb, key: '' };
       el.addEventListener('mouseenter', () => setAspectHover(null, row.key));
       el.addEventListener('mouseleave', () => setAspectHover(null, null));
       aspects.emptyEl.insertAdjacentElement('beforebegin', el);
@@ -2212,12 +2221,14 @@
         row.key = ma.name + '|' + mb.name;
         row.el.hidden = false;
         row.el.dataset.kind = asp.type.kind;
-        setText(row.pair, DISPLAY_NAME[ma.name] + ' ' + ASPECT_SYMBOL[asp.type.name] + ' ' + DISPLAY_NAME[mb.name]);
-        setText(row.kind, asp.type.name);
+        setText(row.nameA, DISPLAY_NAME[ma.name]);
+        setText(row.kind, ASPECT_VERB[asp.type.name]);
+        setText(row.nameB, DISPLAY_NAME[mb.name]);
         setText(row.orb, asp.orb.toFixed(1) + '° ' + (asp.applying ? 'applying' : 'separating'));
       }
       for (let k = list.length; k < aspects.listRows.length; k++) aspects.listRows[k].el.hidden = true;
       aspects.emptyEl.hidden = list.length > 0;
+      setText(aspects.countEl, String(list.length));
     }
 
     // Aspects can be switched from the settings popover or the A key; they show
